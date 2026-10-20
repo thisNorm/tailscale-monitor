@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Tailscale 모니터링 · INVAKO</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">본문 바로가기</a>
+  <header class="topbar">
+    <a class="brand" href="#devices" aria-label="INVAKO Tailscale 모니터링 홈"><span>INVAKO</span><strong>Tailscale 모니터링</strong></a>
+    <nav aria-label="주 메뉴">
+      <a href="#devices" data-page="devices"><span>01</span>장비</a>
+      <a href="#history" data-page="history"><span>02</span>등록 · 삭제 이력</a>
+      <a href="#settings" data-page="settings"><span>03</span>규칙 · 알림</a>
+    </nav>
+    <div class="topbar-status"><span id="connection">불러오는 중</span><span id="poll-interval" class="muted"></span><button type="button" id="poll-button"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="M16 8a6 6 0 1 0 0 5M16 3v5h-5"/></svg><span id="poll-label">지금 검사</span></button><label class="theme-select"><span class="sr-only">화면 테마</span><select id="theme"><option value="system">시스템</option><option value="light">라이트</option><option value="dark">다크</option></select></label><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noreferrer" aria-label="Tailscale 관리 콘솔 열기">콘솔 <span aria-hidden="true">↗</span></a></div>
+  </header>
+  <div class="workspace">
+    <main id="main" tabindex="-1">
+      <div class="page-heading"><div><h1 id="page-title">장비</h1><p id="page-description">이름과 태그가 컨벤션에 맞는지 확인합니다.</p></div></div>
+      <div id="banners"></div>
+      <div id="content"><p class="empty">데이터를 불러오는 중입니다.</p></div>
+    </main>
+    <footer><span id="last-sync">수집 대기</span></footer>
+  </div>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>
