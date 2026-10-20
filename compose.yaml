@@ -1,0 +1,48 @@
+# Run from the folder that holds this file, .env and .data (e.g. ~/tailscale-monitoring).
+# The web "업데이트" button asks the updater to pull UPDATE_IMAGE:<new tag>, write MONITOR_TAG in .env and recreate monitor.
+name: tailscale-monitoring
+services:
+  monitor:
+    image: ${UPDATE_IMAGE:?Set UPDATE_IMAGE in .env}:${MONITOR_TAG:?Set MONITOR_TAG in .env}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MONITOR_BIND: 0.0.0.0
+      MONITOR_PORT: "8787"
+      DATA_DIR: /data
+      UPDATER_URL: http://updater:9000
+      REGISTRY_AUTH_FILE: /docker-config.json
+      # Node gives each address 250 ms by default; slow links (server on Wi-Fi) then fail every Tailscale API connect.
+      NODE_OPTIONS: --network-family-autoselection-attempt-timeout=2500
+      MONITOR_PASSWORD: ${MONITOR_PASSWORD:?Set MONITOR_PASSWORD in .env (8 or more characters)}
+    ports:
+      # The server's Tailscale IP, so only tailnet devices can reach it.
+      - "${MONITOR_HOST_IP:-127.0.0.1}:8787:8787"
+    volumes:
+      - ./.data:/data
+      # Existing `docker login` on the server, read-only; used to detect new tags.
+      - ${DOCKER_AUTH_FILE:?Set DOCKER_AUTH_FILE in .env}:/docker-config.json:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  updater:
+    image: ${UPDATE_IMAGE}:${MONITOR_TAG}
+    command: ["node", "updater.mjs"]
+    # Root only for the Docker socket; no published port, reachable only from monitor on the compose network.
+    user: "0:0"
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    env_file: .env
+    environment:
+      PROJECT_DIR: ${PWD}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DOCKER_AUTH_FILE}:/root/.docker/config.json:ro
+      # Same absolute path inside, so compose resolves ./.data and .env exactly like on the host.
+      - ${PWD}:${PWD}
