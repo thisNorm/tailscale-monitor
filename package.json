@@ -1,0 +1,13 @@
+{
+  "name": "invako-tailscale-monitor",
+  "version": "1.1.1",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.16.0 <25" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "demo": "node server.mjs --demo",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check server.mjs && node --check monitor.mjs && node --check tailscale.mjs && node --check integrations.mjs && node --check updates.mjs && node --check updater.mjs && node --check public/app.js"
+  }
+}

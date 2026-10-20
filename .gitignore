@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.data/
+.data-demo/
+*.sqlite*
+node_modules/
+*.tar
+.claude/
+.superloopy/
+DESIGN.md
