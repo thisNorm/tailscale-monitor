@@ -254,6 +254,24 @@ export class Monitor {
     });
   }
 
+  // View-only device groups shared by everyone on this server; they never touch Tailscale tags or rule checks.
+  // shortcut: whole-object last-write-wins, fine for a few admins; upgrade to per-change ops if edits start colliding.
+  saveViewGroups(value) {
+    const groups = value?.groups, members = value?.members;
+    if (!Array.isArray(groups) || groups.length > 200 || !members || typeof members !== 'object' || Array.isArray(members)) throw new Error('그룹 형식을 확인하세요.');
+    const byId = new Map();
+    for (const group of groups) {
+      if (!group || !/^[a-z0-9]{1,24}$/.test(group.id) || byId.has(group.id) || typeof group.name !== 'string' || !group.name.trim() || group.name.trim().length > 40) throw new Error('그룹 이름은 1~40자로 입력하세요.');
+      byId.set(group.id, { id: group.id, name: group.name.trim(), parent: group.parent ?? null });
+    }
+    for (const group of byId.values()) {
+      if (group.parent !== null && byId.get(group.parent)?.parent !== null) throw new Error('그룹은 2단계까지만 만들 수 있습니다.');
+    }
+    const entries = Object.entries(members);
+    if (entries.length > 5000 || entries.some(([id, groupId]) => typeof id !== 'string' || id.length > 255 || !byId.has(groupId))) throw new Error('장비 그룹 지정을 확인하세요.');
+    this.setMeta('viewGroups', { groups: [...byId.values()], members: Object.fromEntries(entries) });
+  }
+
   state() {
     const devices = this.rows('devices').map(row => {
       const device = parse(row.body);
@@ -266,7 +284,7 @@ export class Monitor {
       pending: this.db.prepare('SELECT count(*) AS n FROM outbox WHERE channel=? AND delivered_at IS NULL').get(channel).n
     }]));
     return { configured: this.source.configured, busy: this.busy, lastPoll: this.meta('lastPoll'), auditGap: this.meta('auditGap'),
-      settings: this.meta('settings'), collectors: Object.fromEntries(['devices', 'logs'].map(key => [key, this.meta(`collector:${key}`) || {}])),
+      settings: this.meta('settings'), viewGroups: this.meta('viewGroups') || { groups: [], members: {} }, collectors: Object.fromEntries(['devices', 'logs'].map(key => [key, this.meta(`collector:${key}`) || {}])),
       devices, findings, events: this.db.prepare("SELECT body FROM events WHERE source IN ('tailscale', 'devices') ORDER BY time DESC, rowid DESC LIMIT 200").all().map(row => parse(row.body)),
       notifications: { channels, error: channels.slack.error || channels.telegram.error || null,
         pending: channels.slack.pending + channels.telegram.pending }

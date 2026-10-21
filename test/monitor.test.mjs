@@ -209,6 +209,16 @@ test('regex tag rules: region "office" needs tag:office, any other region needs 
   assert.throws(() => f.monitor.saveSettings({ ...f.monitor.state().settings, tagRules: [{ prefix: '^(', tags: ['tag:office'] }] }), /규칙/);
 });
 
+test('view groups: two levels max, members must point at a group, saved for everyone', t => {
+  const f = setup(t);
+  const groups = [{ id: 'hw', name: 'team-hardware', parent: null }, { id: 'kisook', name: 'kisook', parent: 'hw' }];
+  f.monitor.saveViewGroups({ groups, members: { 'node-board': 'kisook' } });
+  assert.deepEqual(f.monitor.state().viewGroups, { groups, members: { 'node-board': 'kisook' } });
+  assert.throws(() => f.monitor.saveViewGroups({ groups: [...groups, { id: 'deep', name: 'x', parent: 'kisook' }], members: {} }), /2단계/);
+  assert.throws(() => f.monitor.saveViewGroups({ groups, members: { 'node-board': 'missing' } }), /그룹 지정/);
+  assert.throws(() => f.monitor.saveViewGroups({ groups: [{ id: 'A!', name: 'x', parent: null }], members: {} }), /그룹 이름/);
+});
+
 test('alert lines say only what kind of mismatch it is, never the rule regex', async t => {
   const f = setup(t);
   f.monitor.saveSettings({ ...f.monitor.state().settings, tagRules: [{ prefix: '^[a-z0-9]+-(?!office-)[a-z0-9]+-', tags: ['tag:field'] }] });
