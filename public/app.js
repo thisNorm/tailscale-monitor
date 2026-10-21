@@ -117,7 +117,7 @@ function devicesView() {
     <div class="device-toolbar"><div class="filters" aria-label="장비 필터">
       ${[['all', '전체'], ['unregistered', '미등록'], ['violations', '컨벤션 위반'], ['removed', '목록에서 사라짐']].map(([value, label]) => `<button type="button" class="filter ${deviceFilter === value ? 'active' : ''}" data-device-filter="${value}" aria-pressed="${deviceFilter === value}">${label}<span class="filter-count" data-count="${value}">${deviceCount(value)}</span></button>`).join('')}
     </div><label class="search"><span class="sr-only">장비 검색</span><input id="device-search" type="search" placeholder="장비명, Tailscale IP, 태그 검색" value="${escapeHtml(deviceSearch)}"></label></div>
-    <div class="device-group-tools"><label class="tag-group-filter"><span>태그 그룹</span><select id="device-tag-filter" aria-label="태그 그룹">${deviceTagOptions()}</select></label></div>
+    <div class="device-group-tools"><label class="tag-group-filter"><span>태그 그룹</span><select id="device-tag-filter" aria-label="태그 그룹">${deviceTagOptions()}</select></label><button type="button" data-group-create>+ 그룹 만들기</button></div>
     <div id="device-sections">${deviceGroups()}</div>
     <div class="table-note"><span>목록 이탈 ≠ 삭제 확정</span></div>
   </section><aside class="inspector" aria-label="규칙과 최근 이력">${settingsView(true)}${historyPreview()}</aside></div>`;
@@ -137,10 +137,21 @@ function readDeviceGroupOrder() {
   } catch { return []; }
 }
 
+const viewGroups = () => state.viewGroups || { groups: [], members: {} };
+const groupOf = id => viewGroups().groups.find(group => group.id === viewGroups().members[id]);
+const groupLabel = key => key.startsWith('g:') ? viewGroups().groups.find(group => group.id === key.slice(2))?.name || '그룹' : key || '미등록 장비';
+const flatGroups = () => viewGroups().groups.filter(group => !group.parent).flatMap(top => [{ ...top, path: top.name },
+  ...viewGroups().groups.filter(child => child.parent === top.id).map(child => ({ ...child, path: `${top.name} › ${child.name}` }))]);
+
+async function saveGroups(next) {
+  try { await post('/api/groups', next); state.viewGroups = next; renderDeviceList(); }
+  catch (error) { toast(error.message); }
+}
+
 function orderedDeviceGroupKeys() {
-  const keys = new Set(['']);
+  const keys = new Set(['', ...viewGroups().groups.filter(group => !group.parent).map(group => `g:${group.id}`)]);
   for (const device of state.devices) {
-    if (!isUnregistered(device)) for (const tag of device.tags) keys.add(tag);
+    if (!groupOf(device.id) && !isUnregistered(device)) for (const tag of device.tags) keys.add(tag);
   }
   return [...deviceGroupOrder.filter(tag => keys.has(tag)), ...[...keys].filter(tag => !deviceGroupOrder.includes(tag)).sort((a, b) => a.localeCompare(b))];
 }
@@ -148,7 +159,7 @@ function orderedDeviceGroupKeys() {
 function deviceTagOptions() {
   const keys = orderedDeviceGroupKeys();
   if (deviceTagFilter !== '*' && !keys.includes(deviceTagFilter)) deviceTagFilter = '*';
-  return `<option value="*"${deviceTagFilter === '*' ? ' selected' : ''}>전체 그룹</option>` + keys.map(tag => `<option value="${escapeHtml(tag)}"${deviceTagFilter === tag ? ' selected' : ''}>${escapeHtml(tag || '미등록 장비')}</option>`).join('');
+  return `<option value="*"${deviceTagFilter === '*' ? ' selected' : ''}>전체 그룹</option>` + keys.map(tag => `<option value="${escapeHtml(tag)}"${deviceTagFilter === tag ? ' selected' : ''}>${escapeHtml(groupLabel(tag))}</option>`).join('');
 }
 
 function isUnregistered(device) { return !device.tags.length || unregisteredDevices.has(device.id); }
@@ -164,9 +175,10 @@ function deviceGroups() {
   const devices = state.devices.filter(device => matchesDeviceFilter(device, deviceFilter))
     .filter(device => [device.displayName, device.hostname, ...device.addresses, ...device.tags].join(' ').toLowerCase().includes(query))
     .sort((a, b) => Boolean(b.present && openFindings(b.id).length) - Boolean(a.present && openFindings(a.id).length) || a.displayName.localeCompare(b.displayName));
-  const groups = new Map([['', []]]);
+  const groups = new Map([['', []], ...viewGroups().groups.filter(group => !group.parent).map(group => [`g:${group.id}`, []])]);
   for (const device of devices) {
-    for (const tag of isUnregistered(device) ? [''] : new Set(device.tags)) {
+    const custom = groupOf(device.id);
+    for (const tag of custom ? [`g:${custom.parent || custom.id}`] : isUnregistered(device) ? [''] : new Set(device.tags)) {
       if (!groups.has(tag)) groups.set(tag, []);
       groups.get(tag).push(device);
     }
@@ -175,13 +187,35 @@ function deviceGroups() {
   if (!visibleKeys.length) return '<p class="empty">선택한 그룹에서 조건에 맞는 장비가 없습니다.</p>';
   return visibleKeys.map((tag, index) => {
     const items = groups.get(tag);
-    const title = tag || '미등록 장비';
+    const title = groupLabel(tag);
+    if (tag.startsWith('g:')) return customGroupSection(tag.slice(2), items, index, visibleKeys.length);
     const collapsed = collapsedGroups.has(tag);
     const violations = items.filter(d => d.present && openFindings(d.id).length).length;
     return `<section class="panel device-panel${tag ? '' : ' unregistered-panel'}${collapsed ? ' collapsed' : ''}" data-device-group="${escapeHtml(tag)}" aria-label="${escapeHtml(title)}">
       <div class="panel-header"><div class="section-title"><h2><button type="button" class="group-toggle" data-group-toggle="${escapeHtml(tag)}" aria-expanded="${!collapsed}" aria-controls="group-body-${index}"><span class="chevron" aria-hidden="true"></span>${escapeHtml(title)}</button></h2><span class="result-count">${items.length}</span>${violations ? `<span class="group-violations">위반 ${violations}</span>` : ''}</div><div class="device-group-heading-tools"><span class="section-mark">${tag ? '현재 태그 기준' : '태그 없음 · 웹에서 이동한 장비'}</span><div class="device-group-order" aria-label="${escapeHtml(title)} 순서 변경"><button type="button" data-group-order="up" data-group-order-tag="${escapeHtml(tag)}" aria-label="${escapeHtml(title)} 그룹 위로" title="위로 이동" ${index === 0 ? 'disabled' : ''}>↑</button><button type="button" data-group-order="down" data-group-order-tag="${escapeHtml(tag)}" aria-label="${escapeHtml(title)} 그룹 아래로" title="아래로 이동" ${index === visibleKeys.length - 1 ? 'disabled' : ''}>↓</button></div></div></div>
       <div class="table-wrap" id="group-body-${index}"><table class="device-table"><caption class="sr-only">${escapeHtml(title)} 장비 목록</caption><thead><tr><th scope="col">장비명</th><th scope="col">Tailscale IP</th><th scope="col">현재 태그</th><th scope="col">검사 결과</th></tr></thead><tbody>${deviceRows(items)}</tbody></table></div></section>`;
   }).join('');
+}
+
+const tableHead = '<thead><tr><th scope="col">장비명</th><th scope="col">Tailscale IP</th><th scope="col">현재 태그</th><th scope="col">검사 결과</th></tr></thead>';
+const violationCount = items => items.filter(d => d.present && openFindings(d.id).length).length;
+const groupButtons = (group, top) => `<div class="group-admin">${top ? `<button type="button" data-group-add-child="${group.id}">하위 그룹</button>` : ''}<button type="button" data-group-rename="${group.id}">이름</button><button type="button" data-group-delete="${group.id}">삭제</button></div>`;
+const toggleButton = (key, title, bodyId, collapsed) => `<button type="button" class="group-toggle" data-group-toggle="${escapeHtml(key)}" aria-expanded="${!collapsed}" aria-controls="${bodyId}"><span class="chevron" aria-hidden="true"></span>${escapeHtml(title)}</button>`;
+
+function customGroupSection(id, items, index, total) {
+  const group = viewGroups().groups.find(g => g.id === id);
+  const key = `g:${id}`, collapsed = collapsedGroups.has(key), violations = violationCount(items);
+  const direct = items.filter(d => viewGroups().members[d.id] === id);
+  const children = viewGroups().groups.filter(child => child.parent === id).map(child => {
+    const childKey = `g:${child.id}`, childCollapsed = collapsedGroups.has(childKey);
+    const childItems = items.filter(d => viewGroups().members[d.id] === child.id), childViolations = violationCount(childItems);
+    return `<section class="device-panel subgroup${childCollapsed ? ' collapsed' : ''}" aria-label="${escapeHtml(group.name)} › ${escapeHtml(child.name)}">
+      <div class="panel-header"><div class="section-title"><h3>${toggleButton(childKey, child.name, `sub-body-${child.id}`, childCollapsed)}</h3><span class="result-count">${childItems.length}</span>${childViolations ? `<span class="group-violations">위반 ${childViolations}</span>` : ''}</div>${groupButtons(child, false)}</div>
+      <div class="table-wrap" id="sub-body-${child.id}"><table class="device-table"><caption class="sr-only">${escapeHtml(child.name)} 장비 목록</caption>${tableHead}<tbody>${childItems.length ? deviceRows(childItems) : '<tr><td colspan="4" class="empty">장비 행의 그룹 선택에서 이 그룹으로 옮기세요.</td></tr>'}</tbody></table></div></section>`;
+  }).join('');
+  return `<section class="panel device-panel custom-panel${collapsed ? ' collapsed' : ''}" data-device-group="${escapeHtml(key)}" aria-label="${escapeHtml(group.name)}">
+    <div class="panel-header"><div class="section-title"><h2>${toggleButton(key, group.name, `group-body-${index}`, collapsed)}</h2><span class="result-count">${items.length}</span>${violations ? `<span class="group-violations">위반 ${violations}</span>` : ''}</div><div class="device-group-heading-tools">${groupButtons(group, true)}<div class="device-group-order" aria-label="${escapeHtml(group.name)} 순서 변경"><button type="button" data-group-order="up" data-group-order-tag="${escapeHtml(key)}" aria-label="${escapeHtml(group.name)} 그룹 위로" title="위로 이동" ${index === 0 ? 'disabled' : ''}>↑</button><button type="button" data-group-order="down" data-group-order-tag="${escapeHtml(key)}" aria-label="${escapeHtml(group.name)} 그룹 아래로" title="아래로 이동" ${index === total - 1 ? 'disabled' : ''}>↓</button></div></div></div>
+    <div class="group-body" id="group-body-${index}">${direct.length || !children ? `<div class="table-wrap"><table class="device-table"><caption class="sr-only">${escapeHtml(group.name)} 장비 목록</caption>${tableHead}<tbody>${direct.length ? deviceRows(direct) : '<tr><td colspan="4" class="empty">장비 행의 그룹 선택에서 이 그룹으로 옮기세요.</td></tr>'}</tbody></table></div>` : ''}${children}</div></section>`;
 }
 
 function renderDeviceList() {
@@ -207,7 +241,7 @@ function deviceRows(devices) {
     const rules = state.settings.tagRules.filter(rule => findings.some(item => item.code === `tag-rule:${rule.prefix}`));
     const extraTags = d.present ? d.tags.filter(tag => rules.some(rule => !rule.tags.includes(tag))) : [];
     const reason = extraTags.length ? '초과 태그' : findings.some(item => item.code === 'missing-tags') ? '태그 미지정' : findings.some(item => item.code === 'name-convention') ? '이름 규칙 위반' : '태그 규칙 위반';
-    return `<tr class="${!d.present ? 'row-missing' : findings.length ? 'row-violation' : ''}"><td class="device-cell"><div class="device-identity"><span class="device-symbol" aria-hidden="true"></span><div><strong>${escapeHtml(d.displayName)}</strong><small>${escapeHtml(d.os || '')}${d.os ? ' · ' : ''}<span class="mono">${escapeHtml(d.id)}</span></small>${d.hostname !== d.displayName ? `<small>OS 이름: ${escapeHtml(d.hostname)}</small>` : ''}${presence(d)}</div></div>${moved ? '<small class="device-group-label">웹에서 미등록으로 분류</small>' : ''}${d.tags.length || moved ? `<button type="button" class="device-group-action" data-device-group-id="${escapeHtml(d.id)}" data-device-group-action="${moved ? 'restore' : 'unregister'}" aria-label="${escapeHtml(d.displayName)} ${groupAction}">${groupAction}</button>` : ''}${d.present && (findings.length || excluded) ? `<button type="button" class="device-group-action" data-exclude-id="${escapeHtml(d.id)}" aria-label="${escapeHtml(d.displayName)} ${excludeAction}">${excludeAction}</button>` : ''}</td>
+    return `<tr class="${!d.present ? 'row-missing' : findings.length ? 'row-violation' : ''}"><td class="device-cell"><div class="device-identity"><span class="device-symbol" aria-hidden="true"></span><div><strong>${escapeHtml(d.displayName)}</strong><small>${escapeHtml(d.os || '')}${d.os ? ' · ' : ''}<span class="mono">${escapeHtml(d.id)}</span></small>${d.hostname !== d.displayName ? `<small>OS 이름: ${escapeHtml(d.hostname)}</small>` : ''}${presence(d)}</div></div>${moved ? '<small class="device-group-label">웹에서 미등록으로 분류</small>' : ''}${d.tags.length || moved ? `<button type="button" class="device-group-action" data-device-group-id="${escapeHtml(d.id)}" data-device-group-action="${moved ? 'restore' : 'unregister'}" aria-label="${escapeHtml(d.displayName)} ${groupAction}">${groupAction}</button>` : ''}${viewGroups().groups.length ? `<label class="device-move"><span>그룹</span><select data-move-device="${escapeHtml(d.id)}" aria-label="${escapeHtml(d.displayName)} 그룹">${[['', '태그 기준'], ...flatGroups().map(g => [g.id, g.path])].map(([value, label]) => `<option value="${value}"${(viewGroups().members[d.id] || '') === value ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label>` : ''}${d.present && (findings.length || excluded) ? `<button type="button" class="device-group-action" data-exclude-id="${escapeHtml(d.id)}" aria-label="${escapeHtml(d.displayName)} ${excludeAction}">${excludeAction}</button>` : ''}</td>
     <td class="ip-cell">${(ip => ip ? `<button type="button" class="ip-chip" data-copy="${escapeHtml(ip)}" title="클릭해서 복사${escapeHtml(d.addresses.filter(a => a !== ip).map(a => ` · ${a}`).join(''))}">${escapeHtml(ip)}</button>` : '')(d.addresses.find(a => !a.includes(':')) || d.addresses[0])}</td><td class="tags">${d.tags.length ? d.tags.map(tag => `<span class="tag${extraTags.includes(tag) ? ' tag-extra' : ''}">${extraTags.includes(tag) ? '<span aria-label="초과 태그">+</span> ' : ''}${escapeHtml(tag)}</span>`).join('') : '<span class="tag tag-empty">∅ 태그 없음</span>'}</td>
     <td>${excluded && d.present ? '<span class="excluded-label">예외 장비 · 검사·알림 제외</span><p class="result-detail">팀이 허용한 예외입니다. 해제하면 다시 검사합니다.</p>' : !d.present ? '<div class="missing-label">목록에서 사라짐</div><p class="violation muted">삭제 여부는 감사 로그에서 확인합니다.</p>' : findings.length ? `<div class="violation-label">${reason}</div>${findings.map(item => `<p class="violation">${escapeHtml(item.detail)}</p>`).join('')}${findings.some(item => item.code === 'name-convention') ? `<code class="expected-pattern">${escapeHtml(state.settings.namePattern)}</code>` : ''}` : '<span class="check-clear">위반 없음</span><p class="result-detail">설정한 이름·태그 규칙 준수</p>'}</td></tr>`;
   }).join('');
@@ -298,15 +332,21 @@ function integrationsView() {
   </div></section>`;
 }
 
+function ruleNoteView(editing = false) {
+  const note = state.settings.ruleNote || '';
+  return `<div class="rule-note" id="rule-note"><div class="rule-note-head"><span class="field-title">현재 규칙</span>${editing ? '' : '<button type="button" data-note-edit>수정</button>'}</div>${editing
+    ? `<textarea id="rule-note-input" rows="10" maxlength="2000" aria-label="현재 규칙 설명">${escapeHtml(note)}</textarea><div class="rule-note-actions"><button type="button" data-note-cancel>취소</button><button type="button" class="primary" data-note-save>저장</button></div>`
+    : `<p class="rule-note-text">${note ? escapeHtml(note) : '아직 규칙 설명이 없습니다. 수정을 눌러 팀이 지킬 규칙을 적어 두세요.'}</p>`}</div>`;
+}
+
 function settingsView(compact = false) {
   const settings = state.settings;
-  return `<div class="settings-layout${compact ? ' compact-settings' : ''}">${compact ? '' : '<div class="settings-column">'}<section class="panel rules-panel"><div class="panel-header"><div class="section-title">${compact ? '<span class="section-number">03</span>' : ''}<h2>${compact ? '규칙 · 알림 설정' : '컨벤션 규칙'}</h2></div></div><div class="panel-body"><form id="rules-form">
+  return `<div class="settings-layout${compact ? ' compact-settings' : ''}">${compact ? '' : '<div class="settings-column">'}<section class="panel rules-panel"><div class="panel-header"><div class="section-title">${compact ? '<span class="section-number">03</span>' : ''}<h2>${compact ? '규칙' : '컨벤션 규칙'}</h2></div></div><div class="panel-body">${ruleNoteView()}${compact ? '<details class="regex-rules"><summary>정규식 규칙 보기·수정</summary>' : ''}<form id="rules-form">
     <label class="field"><span class="field-title">이름 정규식</span><input name="namePattern" class="mono" aria-label="이름 정규식" value="${escapeHtml(settings.namePattern)}" maxlength="256" required>${!compact ? '<small>Tailscale 장비명을 검사합니다. 예: jetson-hadong-cough01, chonnam-uni-001, kisook-laptop</small>' : ''}</label>
-    <label class="field"><span class="field-title">접두어 → 필수 태그 <small>지정한 태그만 허용</small></span><textarea name="tagRules" rows="3" class="mono" aria-label="장비명별 태그 규칙" placeholder="jetson-hadong- = tag:pig">${escapeHtml(settings.tagRules.map(rule => `${rule.prefix} = ${rule.tags.join(', ')}`).join('\n'))}</textarea>${!compact ? '<small>예: jetson-hadong- = tag:pig · 추가 태그도 위반으로 검사합니다.</small>' : ''}</label>
+    <label class="field"><span class="field-title">이름 규칙 → 필수 태그 <small>접두어 또는 ^정규식</small></span><textarea name="tagRules" rows="3" class="mono" aria-label="장비명별 태그 규칙" placeholder="^[a-z0-9]+-office- = tag:office">${escapeHtml(settings.tagRules.map(rule => `${rule.prefix} = ${rule.tags.join(', ')}`).join('\n'))}</textarea>${!compact ? '<small>예: ^[a-z0-9]+-office- = tag:office (장비-지역-닉네임의 지역이 office) · 정확히 이 태그만 허용합니다.</small>' : ''}</label>
     <label class="checkbox-label"><input type="checkbox" name="requireTags" ${settings.requireTags ? 'checked' : ''}> 태그가 없는 장비도 위반으로 알림</label>
     ${settings.excludedDevices?.length ? `<p class="help">예외 장비 ${settings.excludedDevices.length}대 · ${escapeHtml(settings.excludedDevices.map(id => state.devices.find(d => d.id === id)?.displayName || id).join(', '))} <small>(장비 화면에서 해제)</small></p>` : ''}
-    ${compact ? notificationControls() : ''}
-    <p id="rules-error" class="form-error" role="alert"></p><div class="form-actions"><small id="dirty-note"></small><button type="submit" class="primary">규칙 저장</button></div></form>${compact ? '<a class="setup-link" href="#settings">연동 방법 · 자세한 설정 ↗</a>' : ''}</div></section>
+    <p id="rules-error" class="form-error" role="alert"></p><div class="form-actions"><small id="dirty-note"></small><button type="submit" class="primary">규칙 저장</button></div></form>${compact ? '</details>' : ''}${compact ? '<a class="setup-link" href="#settings">연동 방법 · 자세한 설정 ↗</a>' : ''}</div></section>
     ${!compact ? `<section class="panel notification-panel"><div class="panel-header"><h2>개인 테스트 → 팀 운영</h2></div><div class="panel-body">${notificationControls()}<p class="help">채널을 켜거나 연동 정보를 저장하면 현재 열린 위반을 한 번 묶어서 보냅니다. 전송 실패로 보관된 알림은 ON으로 전환하면 재시도합니다.</p></div></section></div>
     ${integrationsView()}` : ''}</div>`;
 }
@@ -336,9 +376,12 @@ async function refresh(passive = false) {
     loadedVersion ??= next.update?.current;
     state = await response.json();
     renderChrome();
-    const changed = JSON.stringify([state.devices, state.findings, state.events]) !== JSON.stringify([previous?.devices, previous?.findings, previous?.events]);
+    const changed = JSON.stringify([state.devices, state.findings, state.events, state.viewGroups]) !== JSON.stringify([previous?.devices, previous?.findings, previous?.events, previous?.viewGroups]);
     if (!passive || !previous) renderPage();
-    else if (changed && page === 'devices') {
+    else if (page === 'devices' && JSON.stringify(state.settings) !== JSON.stringify(previous.settings) && !$('.inspector')?.contains(document.activeElement) && !$('#rule-note-input')) {
+      $('.inspector').innerHTML = settingsView(true) + historyPreview();
+      if (changed) renderDeviceList();
+    } else if (changed && page === 'devices') {
       renderDeviceList();
       $('#recent-events').innerHTML = recentEvents();
     } else if (page === 'history' && changed && !$('#content').contains(document.activeElement)) renderPage();
@@ -419,6 +462,33 @@ document.addEventListener('click', async event => {
     catch (error) { toast(error.message); updateButton.disabled = false; }
     return;
   }
+  const createButton = event.target.closest('[data-group-create], [data-group-add-child]');
+  if (createButton) {
+    const parent = createButton.dataset.groupAddChild || null;
+    const name = prompt(parent ? '하위 그룹 이름' : '새 그룹 이름 (예: team-hardware)')?.trim();
+    if (!name) return;
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    await saveGroups({ groups: [...viewGroups().groups, { id, name, parent }], members: viewGroups().members });
+    return;
+  }
+  const renameButton = event.target.closest('[data-group-rename]');
+  if (renameButton) {
+    const group = viewGroups().groups.find(g => g.id === renameButton.dataset.groupRename);
+    const name = prompt('그룹 이름', group?.name)?.trim();
+    if (!group || !name || name === group.name) return;
+    await saveGroups({ groups: viewGroups().groups.map(g => g.id === group.id ? { ...g, name } : g), members: viewGroups().members });
+    return;
+  }
+  const deleteButton = event.target.closest('[data-group-delete]');
+  if (deleteButton) {
+    const id = deleteButton.dataset.groupDelete;
+    const group = viewGroups().groups.find(g => g.id === id);
+    if (!group || !confirm(`'${group.name}' 그룹을 지울까요? 하위 그룹도 함께 지워지고, 장비는 태그 그룹으로 돌아갑니다.`)) return;
+    const removed = new Set([id, ...viewGroups().groups.filter(g => g.parent === id).map(g => g.id)]);
+    await saveGroups({ groups: viewGroups().groups.filter(g => !removed.has(g.id)),
+      members: Object.fromEntries(Object.entries(viewGroups().members).filter(([, groupId]) => !removed.has(groupId))) });
+    return;
+  }
   const groupToggle = event.target.closest('[data-group-toggle]');
   if (groupToggle) {
     const tag = groupToggle.dataset.groupToggle;
@@ -466,6 +536,22 @@ document.addEventListener('click', async event => {
     } catch (error) { toast(error.message); excludeButton.disabled = false; }
     return;
   }
+  if (event.target.closest('[data-note-edit], [data-note-cancel]')) {
+    $('#rule-note').outerHTML = ruleNoteView(Boolean(event.target.closest('[data-note-edit]')));
+    $('#rule-note-input')?.focus();
+    return;
+  }
+  const noteSave = event.target.closest('[data-note-save]');
+  if (noteSave) {
+    noteSave.disabled = true;
+    try {
+      await post('/api/settings', { ...state.settings, ruleNote: $('#rule-note-input').value.trim() });
+      state.settings.ruleNote = $('#rule-note-input').value.trim();
+      $('#rule-note').outerHTML = ruleNoteView();
+      toast('규칙 설명을 저장했습니다.');
+    } catch (error) { toast(error.message); noteSave.disabled = false; }
+    return;
+  }
   const deviceButton = event.target.closest('[data-device-filter]');
   if (deviceButton) { deviceFilter = deviceButton.dataset.deviceFilter; renderDeviceList(); }
   const historyButton = event.target.closest('[data-history-filter]');
@@ -495,6 +581,12 @@ document.addEventListener('change', async event => {
   if (event.target.id === 'theme') {
     applyTheme(event.target.value);
     try { localStorage.setItem(themeStorageKey, event.target.value); } catch {}
+    return;
+  }
+  if (event.target.dataset.moveDevice) {
+    const members = { ...viewGroups().members };
+    if (event.target.value) members[event.target.dataset.moveDevice] = event.target.value; else delete members[event.target.dataset.moveDevice];
+    await saveGroups({ groups: viewGroups().groups, members });
     return;
   }
   if (event.target.id === 'device-tag-filter') {

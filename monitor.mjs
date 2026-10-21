@@ -14,6 +14,8 @@ const defaults = {
   namePattern: '^(?:jetson-[a-z]+-cough[0-9]+|chonnam-uni-[0-9]{3}|(?!jetson-|chonnam-)[a-z0-9]+(?:-[a-z0-9]+)+)$',
   tagRules: [{ prefix: 'jetson-', tags: ['tag:pig'] }],
   requireTags: true,
+  // Plain-language rule summary the team reads on the devices page; not used for checks.
+  ruleNote: '',
   // Node IDs the team accepted as exceptions (e.g. office jetson boards); they are not checked or alerted.
   excludedDevices: [],
   notificationsEnabled: true,
@@ -21,15 +23,20 @@ const defaults = {
   telegramEnabled: true
 };
 
+// A rule key is a name prefix, or a regex when it starts with "^" (e.g. "^[a-z0-9]+-office-" checks the region segment).
+const isPatternRule = key => key.startsWith('^') && key.length <= 200 && (() => { try { new RegExp(key); return true; } catch { return false; } })();
+const ruleMatches = (key, name) => key.startsWith('^') ? new RegExp(key).test(name) : name.startsWith(key);
+
 export function validateSettings(value) {
   if (!value || typeof value.namePattern !== 'string' || !value.namePattern.trim() || value.namePattern.length > 256) throw new Error('이름 규칙은 1~256자로 입력하세요.');
   try { new RegExp(value.namePattern); } catch { throw new Error('이름 정규식이 올바르지 않습니다.'); }
   if (!Array.isArray(value.tagRules) || value.tagRules.length > 100 || value.tagRules.some(rule =>
-    !rule || typeof rule.prefix !== 'string' || !/^[a-z0-9][a-z0-9-]{0,99}$/.test(rule.prefix)
+    !rule || typeof rule.prefix !== 'string' || !(/^[a-z0-9][a-z0-9-]{0,99}$/.test(rule.prefix) || isPatternRule(rule.prefix))
     || !Array.isArray(rule.tags) || !rule.tags.length || rule.tags.some(tag => typeof tag !== 'string' || !/^tag:[a-z][a-z0-9-]{0,62}$/.test(tag)))) {
     throw new Error('장비명별 규칙은 접두어 = tag:이름 형식으로 입력하세요.');
   }
-  value = { ...value, excludedDevices: value.excludedDevices ?? [] };
+  value = { ...value, excludedDevices: value.excludedDevices ?? [], ruleNote: value.ruleNote ?? '' };
+  if (typeof value.ruleNote !== 'string' || value.ruleNote.length > 2000) throw new Error('규칙 설명은 2000자 이내로 입력하세요.');
   if (!Array.isArray(value.excludedDevices) || value.excludedDevices.length > 500 || value.excludedDevices.some(id => typeof id !== 'string' || !id || id.length > 255)) throw new Error('예외 장비 목록을 확인하세요.');
   if (['requireTags', 'notificationsEnabled', 'slackEnabled', 'telegramEnabled'].some(key => typeof value[key] !== 'boolean')) throw new Error('검사·알림 설정을 확인하세요.');
   return Object.fromEntries(Object.keys(defaults).map(key => [key, Array.isArray(value[key]) ? sorted(value[key]) : value[key]]));
@@ -92,7 +99,8 @@ export class Monitor {
   findingEntry(item) {
     const device = parse(this.db.prepare('SELECT body FROM devices WHERE id=?').get(item.deviceId)?.body);
     return { target: item.target, address: device?.addresses?.find(a => !a.includes(':')) || device?.addresses?.[0] || '주소 미확인',
-      detail: item.code === 'name-convention' ? '이름 규칙 불일치' : item.code === 'missing-tags' ? '태그 없음' : item.detail };
+      // Alerts stay short; the full reason (rule, current tags) is on the monitoring page.
+      detail: item.code === 'name-convention' ? '이름 규칙 불일치' : item.code === 'missing-tags' ? '태그 없음' : '태그 규칙 불일치' };
   }
 
   // Violations found while a channel was off or unconfigured are otherwise never sent to it.
@@ -137,8 +145,8 @@ export class Monitor {
       const add = (code, detail) => findings.push({ key: `device:${row.id}:${code}`, code, target: d.displayName, deviceId: row.id, detail, severity: 'warning' });
       if (!new RegExp(settings.namePattern).test(d.displayName)) add('name-convention', `이름 규칙 불일치: ${d.displayName}`);
       if (settings.requireTags && !d.tags.length) add('missing-tags', '태그가 지정되지 않았습니다.');
-      for (const rule of settings.tagRules.filter(r => d.displayName.startsWith(r.prefix))) {
-        if (hash(sorted(rule.tags)) !== hash(sorted(d.tags))) add(`tag-rule:${rule.prefix}`, `${rule.prefix} 장비의 태그는 ${rule.tags.join(', ')}여야 합니다. 현재: ${d.tags.join(', ') || '(없음)'}`);
+      for (const rule of settings.tagRules.filter(r => ruleMatches(r.prefix, d.displayName))) {
+        if (hash(sorted(rule.tags)) !== hash(sorted(d.tags))) add(`tag-rule:${rule.prefix}`, `${rule.prefix.startsWith('^') ? `규칙 ${rule.prefix}에 해당하는` : rule.prefix} 장비의 태그는 ${rule.tags.join(', ')}여야 합니다. 현재: ${d.tags.join(', ') || '(없음)'}`);
       }
     }
     this.reconcile('devices', findings);
@@ -249,6 +257,24 @@ export class Monitor {
     });
   }
 
+  // View-only device groups shared by everyone on this server; they never touch Tailscale tags or rule checks.
+  // shortcut: whole-object last-write-wins, fine for a few admins; upgrade to per-change ops if edits start colliding.
+  saveViewGroups(value) {
+    const groups = value?.groups, members = value?.members;
+    if (!Array.isArray(groups) || groups.length > 200 || !members || typeof members !== 'object' || Array.isArray(members)) throw new Error('그룹 형식을 확인하세요.');
+    const byId = new Map();
+    for (const group of groups) {
+      if (!group || !/^[a-z0-9]{1,24}$/.test(group.id) || byId.has(group.id) || typeof group.name !== 'string' || !group.name.trim() || group.name.trim().length > 40) throw new Error('그룹 이름은 1~40자로 입력하세요.');
+      byId.set(group.id, { id: group.id, name: group.name.trim(), parent: group.parent ?? null });
+    }
+    for (const group of byId.values()) {
+      if (group.parent !== null && byId.get(group.parent)?.parent !== null) throw new Error('그룹은 2단계까지만 만들 수 있습니다.');
+    }
+    const entries = Object.entries(members);
+    if (entries.length > 5000 || entries.some(([id, groupId]) => typeof id !== 'string' || id.length > 255 || !byId.has(groupId))) throw new Error('장비 그룹 지정을 확인하세요.');
+    this.setMeta('viewGroups', { groups: [...byId.values()], members: Object.fromEntries(entries) });
+  }
+
   state() {
     const devices = this.rows('devices').map(row => {
       const device = parse(row.body);
@@ -261,7 +287,7 @@ export class Monitor {
       pending: this.db.prepare('SELECT count(*) AS n FROM outbox WHERE channel=? AND delivered_at IS NULL').get(channel).n
     }]));
     return { configured: this.source.configured, busy: this.busy, lastPoll: this.meta('lastPoll'), auditGap: this.meta('auditGap'),
-      settings: this.meta('settings'), collectors: Object.fromEntries(['devices', 'logs'].map(key => [key, this.meta(`collector:${key}`) || {}])),
+      settings: this.meta('settings'), viewGroups: this.meta('viewGroups') || { groups: [], members: {} }, collectors: Object.fromEntries(['devices', 'logs'].map(key => [key, this.meta(`collector:${key}`) || {}])),
       devices, findings, events: this.db.prepare("SELECT body FROM events WHERE source IN ('tailscale', 'devices') ORDER BY time DESC, rowid DESC LIMIT 200").all().map(row => parse(row.body)),
       notifications: { channels, error: channels.slack.error || channels.telegram.error || null,
         pending: channels.slack.pending + channels.telegram.pending }

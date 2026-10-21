@@ -122,6 +122,7 @@ export async function startServer({ env = process.env, dbPath, source, notifiers
       switch (url.pathname) {
         case '/api/poll': void runPoll(); return send(202, { ok: true });
         case '/api/settings': monitor.saveSettings(input); break;
+        case '/api/groups': monitor.saveViewGroups(input); break;
         case '/api/update': {
           if (!update.enabled) return send(400, { error: '이 설치에서는 웹 업데이트를 사용할 수 없습니다. UPDATE_IMAGE와 UPDATER_URL을 확인하세요.' });
           if (!update.latest) return send(400, { error: '적용할 새 버전이 없습니다.' });
