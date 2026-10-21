@@ -332,15 +332,21 @@ function integrationsView() {
   </div></section>`;
 }
 
+function ruleNoteView(editing = false) {
+  const note = state.settings.ruleNote || '';
+  return `<div class="rule-note" id="rule-note"><div class="rule-note-head"><span class="field-title">현재 규칙</span>${editing ? '' : '<button type="button" data-note-edit>수정</button>'}</div>${editing
+    ? `<textarea id="rule-note-input" rows="10" maxlength="2000" aria-label="현재 규칙 설명">${escapeHtml(note)}</textarea><div class="rule-note-actions"><button type="button" data-note-cancel>취소</button><button type="button" class="primary" data-note-save>저장</button></div>`
+    : `<p class="rule-note-text">${note ? escapeHtml(note) : '아직 규칙 설명이 없습니다. 수정을 눌러 팀이 지킬 규칙을 적어 두세요.'}</p>`}</div>`;
+}
+
 function settingsView(compact = false) {
   const settings = state.settings;
-  return `<div class="settings-layout${compact ? ' compact-settings' : ''}">${compact ? '' : '<div class="settings-column">'}<section class="panel rules-panel"><div class="panel-header"><div class="section-title">${compact ? '<span class="section-number">03</span>' : ''}<h2>${compact ? '규칙 · 알림 설정' : '컨벤션 규칙'}</h2></div></div><div class="panel-body"><form id="rules-form">
+  return `<div class="settings-layout${compact ? ' compact-settings' : ''}">${compact ? '' : '<div class="settings-column">'}<section class="panel rules-panel"><div class="panel-header"><div class="section-title">${compact ? '<span class="section-number">03</span>' : ''}<h2>${compact ? '규칙' : '컨벤션 규칙'}</h2></div></div><div class="panel-body">${ruleNoteView()}${compact ? '<details class="regex-rules"><summary>정규식 규칙 보기·수정</summary>' : ''}<form id="rules-form">
     <label class="field"><span class="field-title">이름 정규식</span><input name="namePattern" class="mono" aria-label="이름 정규식" value="${escapeHtml(settings.namePattern)}" maxlength="256" required>${!compact ? '<small>Tailscale 장비명을 검사합니다. 예: jetson-hadong-cough01, chonnam-uni-001, kisook-laptop</small>' : ''}</label>
     <label class="field"><span class="field-title">이름 규칙 → 필수 태그 <small>접두어 또는 ^정규식</small></span><textarea name="tagRules" rows="3" class="mono" aria-label="장비명별 태그 규칙" placeholder="^[a-z0-9]+-office- = tag:office">${escapeHtml(settings.tagRules.map(rule => `${rule.prefix} = ${rule.tags.join(', ')}`).join('\n'))}</textarea>${!compact ? '<small>예: ^[a-z0-9]+-office- = tag:office (장비-지역-닉네임의 지역이 office) · 정확히 이 태그만 허용합니다.</small>' : ''}</label>
     <label class="checkbox-label"><input type="checkbox" name="requireTags" ${settings.requireTags ? 'checked' : ''}> 태그가 없는 장비도 위반으로 알림</label>
     ${settings.excludedDevices?.length ? `<p class="help">예외 장비 ${settings.excludedDevices.length}대 · ${escapeHtml(settings.excludedDevices.map(id => state.devices.find(d => d.id === id)?.displayName || id).join(', '))} <small>(장비 화면에서 해제)</small></p>` : ''}
-    ${compact ? notificationControls() : ''}
-    <p id="rules-error" class="form-error" role="alert"></p><div class="form-actions"><small id="dirty-note"></small><button type="submit" class="primary">규칙 저장</button></div></form>${compact ? '<a class="setup-link" href="#settings">연동 방법 · 자세한 설정 ↗</a>' : ''}</div></section>
+    <p id="rules-error" class="form-error" role="alert"></p><div class="form-actions"><small id="dirty-note"></small><button type="submit" class="primary">규칙 저장</button></div></form>${compact ? '</details>' : ''}${compact ? '<a class="setup-link" href="#settings">연동 방법 · 자세한 설정 ↗</a>' : ''}</div></section>
     ${!compact ? `<section class="panel notification-panel"><div class="panel-header"><h2>개인 테스트 → 팀 운영</h2></div><div class="panel-body">${notificationControls()}<p class="help">채널을 켜거나 연동 정보를 저장하면 현재 열린 위반을 한 번 묶어서 보냅니다. 전송 실패로 보관된 알림은 ON으로 전환하면 재시도합니다.</p></div></section></div>
     ${integrationsView()}` : ''}</div>`;
 }
@@ -372,7 +378,10 @@ async function refresh(passive = false) {
     renderChrome();
     const changed = JSON.stringify([state.devices, state.findings, state.events, state.viewGroups]) !== JSON.stringify([previous?.devices, previous?.findings, previous?.events, previous?.viewGroups]);
     if (!passive || !previous) renderPage();
-    else if (changed && page === 'devices') {
+    else if (page === 'devices' && JSON.stringify(state.settings) !== JSON.stringify(previous.settings) && !$('.inspector')?.contains(document.activeElement) && !$('#rule-note-input')) {
+      $('.inspector').innerHTML = settingsView(true) + historyPreview();
+      if (changed) renderDeviceList();
+    } else if (changed && page === 'devices') {
       renderDeviceList();
       $('#recent-events').innerHTML = recentEvents();
     } else if (page === 'history' && changed && !$('#content').contains(document.activeElement)) renderPage();
@@ -525,6 +534,22 @@ document.addEventListener('click', async event => {
       await refresh();
       toast(excluded ? '예외를 해제했습니다. 다시 검사합니다.' : '예외 장비로 지정했습니다. 검사와 알림에서 제외됩니다.');
     } catch (error) { toast(error.message); excludeButton.disabled = false; }
+    return;
+  }
+  if (event.target.closest('[data-note-edit], [data-note-cancel]')) {
+    $('#rule-note').outerHTML = ruleNoteView(Boolean(event.target.closest('[data-note-edit]')));
+    $('#rule-note-input')?.focus();
+    return;
+  }
+  const noteSave = event.target.closest('[data-note-save]');
+  if (noteSave) {
+    noteSave.disabled = true;
+    try {
+      await post('/api/settings', { ...state.settings, ruleNote: $('#rule-note-input').value.trim() });
+      state.settings.ruleNote = $('#rule-note-input').value.trim();
+      $('#rule-note').outerHTML = ruleNoteView();
+      toast('규칙 설명을 저장했습니다.');
+    } catch (error) { toast(error.message); noteSave.disabled = false; }
     return;
   }
   const deviceButton = event.target.closest('[data-device-filter]');

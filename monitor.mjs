@@ -14,6 +14,8 @@ const defaults = {
   namePattern: '^(?:jetson-[a-z]+-cough[0-9]+|chonnam-uni-[0-9]{3}|(?!jetson-|chonnam-)[a-z0-9]+(?:-[a-z0-9]+)+)$',
   tagRules: [{ prefix: 'jetson-', tags: ['tag:pig'] }],
   requireTags: true,
+  // Plain-language rule summary the team reads on the devices page; not used for checks.
+  ruleNote: '',
   // Node IDs the team accepted as exceptions (e.g. office jetson boards); they are not checked or alerted.
   excludedDevices: [],
   notificationsEnabled: true,
@@ -33,7 +35,8 @@ export function validateSettings(value) {
     || !Array.isArray(rule.tags) || !rule.tags.length || rule.tags.some(tag => typeof tag !== 'string' || !/^tag:[a-z][a-z0-9-]{0,62}$/.test(tag)))) {
     throw new Error('장비명별 규칙은 접두어 = tag:이름 형식으로 입력하세요.');
   }
-  value = { ...value, excludedDevices: value.excludedDevices ?? [] };
+  value = { ...value, excludedDevices: value.excludedDevices ?? [], ruleNote: value.ruleNote ?? '' };
+  if (typeof value.ruleNote !== 'string' || value.ruleNote.length > 2000) throw new Error('규칙 설명은 2000자 이내로 입력하세요.');
   if (!Array.isArray(value.excludedDevices) || value.excludedDevices.length > 500 || value.excludedDevices.some(id => typeof id !== 'string' || !id || id.length > 255)) throw new Error('예외 장비 목록을 확인하세요.');
   if (['requireTags', 'notificationsEnabled', 'slackEnabled', 'telegramEnabled'].some(key => typeof value[key] !== 'boolean')) throw new Error('검사·알림 설정을 확인하세요.');
   return Object.fromEntries(Object.keys(defaults).map(key => [key, Array.isArray(value[key]) ? sorted(value[key]) : value[key]]));

@@ -226,3 +226,10 @@ test('alert lines say only what kind of mismatch it is, never the rule regex', a
   const items = JSON.parse(f.delivered.at(-1)).sections.flatMap(s => s.items);
   assert.deepEqual(items.map(i => i.detail), ['태그 규칙 불일치']);
 });
+
+test('rule note is saved as plain text up to 2000 characters', t => {
+  const f = setup(t);
+  f.monitor.saveSettings({ ...f.monitor.state().settings, ruleNote: '장비 이름은 장비-지역-닉네임' });
+  assert.equal(f.monitor.state().settings.ruleNote, '장비 이름은 장비-지역-닉네임');
+  assert.throws(() => f.monitor.saveSettings({ ...f.monitor.state().settings, ruleNote: 'x'.repeat(2001) }), /2000자/);
+});

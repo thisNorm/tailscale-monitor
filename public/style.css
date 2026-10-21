@@ -373,3 +373,11 @@ button.ip-chip:hover { background: light-dark(var(--l-surface-3), #18222e); bord
 .device-move span { white-space: nowrap; flex: none; }
 .device-move { display: flex; align-items: center; gap: 6px; margin: 8px 0 0 29px; font-size: 13px; color: light-dark(var(--l-text-3), #a0a8b6); }
 .device-move select { min-height: 30px; padding: 3px 6px; font-size: 13px; max-width: 220px; }
+.rule-note { margin-bottom: 14px; }
+.rule-note-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.rule-note-head button, .rule-note-actions button { min-height: 30px; padding: 3px 10px; font-size: 13px; }
+.rule-note-text { white-space: pre-line; line-height: 1.75; font-size: 14px; color: light-dark(var(--l-text-2), #c3cad5); }
+#rule-note-input { width: 100%; line-height: 1.7; }
+.rule-note-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.regex-rules { border-top: 1px solid light-dark(var(--l-border), #2b313d); padding-top: 10px; }
+.regex-rules > summary { cursor: pointer; font-size: 13px; color: light-dark(var(--l-text-3), #a0a8b6); margin-bottom: 10px; }
