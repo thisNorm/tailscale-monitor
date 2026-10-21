@@ -195,3 +195,24 @@ test('alerts are split into name and tag sections, and excluded devices are not 
   assert.equal(f.monitor.state().findings.filter(x => !x.resolvedAt).length, 0);
   assert.equal(f.delivered.length, 1);
 });
+
+test('regex tag rules: region "office" needs tag:office, any other region needs tag:field', async t => {
+  const f = setup(t);
+  const named = (name, tags) => ({ ...board, nodeId: name, id: name, hostname: name, name: `${name}.example.ts.net`, tags });
+  f.monitor.saveSettings({ ...f.monitor.state().settings, namePattern: '^[a-z0-9]+-[a-z0-9]+-[a-z0-9]+(?:-[a-z0-9]+)*$',
+    tagRules: [{ prefix: '^[a-z0-9]+-office-', tags: ['tag:office'] }, { prefix: '^[a-z0-9]+-(?!office-)[a-z0-9]+-', tags: ['tag:field'] }] });
+  f.devices([named('desktop-office-kisook', ['tag:office']), named('jetson-jeju-etri', ['tag:field']),
+    named('jetson-office-onano', ['tag:field']), named('jetson-hadong-cough01', ['tag:office', 'tag:field']), named('nas-office', ['tag:office'])]);
+  await f.monitor.poll();
+  assert.deepEqual(f.monitor.state().findings.filter(x => !x.resolvedAt).map(x => `${x.target}:${x.code}`).sort(), [
+    'jetson-hadong-cough01:tag-rule:^[a-z0-9]+-(?!office-)[a-z0-9]+-', 'jetson-office-onano:tag-rule:^[a-z0-9]+-office-', 'nas-office:name-convention']);
+  assert.throws(() => f.monitor.saveSettings({ ...f.monitor.state().settings, tagRules: [{ prefix: '^(', tags: ['tag:office'] }] }), /규칙/);
+});
+
+test('alert lines say only what kind of mismatch it is, never the rule regex', async t => {
+  const f = setup(t);
+  f.monitor.saveSettings({ ...f.monitor.state().settings, tagRules: [{ prefix: '^[a-z0-9]+-(?!office-)[a-z0-9]+-', tags: ['tag:field'] }] });
+  await f.monitor.poll();
+  const items = JSON.parse(f.delivered.at(-1)).sections.flatMap(s => s.items);
+  assert.deepEqual(items.map(i => i.detail), ['태그 규칙 불일치']);
+});

@@ -21,11 +21,15 @@ const defaults = {
   telegramEnabled: true
 };
 
+// A rule key is a name prefix, or a regex when it starts with "^" (e.g. "^[a-z0-9]+-office-" checks the region segment).
+const isPatternRule = key => key.startsWith('^') && key.length <= 200 && (() => { try { new RegExp(key); return true; } catch { return false; } })();
+const ruleMatches = (key, name) => key.startsWith('^') ? new RegExp(key).test(name) : name.startsWith(key);
+
 export function validateSettings(value) {
   if (!value || typeof value.namePattern !== 'string' || !value.namePattern.trim() || value.namePattern.length > 256) throw new Error('이름 규칙은 1~256자로 입력하세요.');
   try { new RegExp(value.namePattern); } catch { throw new Error('이름 정규식이 올바르지 않습니다.'); }
   if (!Array.isArray(value.tagRules) || value.tagRules.length > 100 || value.tagRules.some(rule =>
-    !rule || typeof rule.prefix !== 'string' || !/^[a-z0-9][a-z0-9-]{0,99}$/.test(rule.prefix)
+    !rule || typeof rule.prefix !== 'string' || !(/^[a-z0-9][a-z0-9-]{0,99}$/.test(rule.prefix) || isPatternRule(rule.prefix))
     || !Array.isArray(rule.tags) || !rule.tags.length || rule.tags.some(tag => typeof tag !== 'string' || !/^tag:[a-z][a-z0-9-]{0,62}$/.test(tag)))) {
     throw new Error('장비명별 규칙은 접두어 = tag:이름 형식으로 입력하세요.');
   }
@@ -92,7 +96,8 @@ export class Monitor {
   findingEntry(item) {
     const device = parse(this.db.prepare('SELECT body FROM devices WHERE id=?').get(item.deviceId)?.body);
     return { target: item.target, address: device?.addresses?.find(a => !a.includes(':')) || device?.addresses?.[0] || '주소 미확인',
-      detail: item.code === 'name-convention' ? '이름 규칙 불일치' : item.code === 'missing-tags' ? '태그 없음' : item.detail };
+      // Alerts stay short; the full reason (rule, current tags) is on the monitoring page.
+      detail: item.code === 'name-convention' ? '이름 규칙 불일치' : item.code === 'missing-tags' ? '태그 없음' : '태그 규칙 불일치' };
   }
 
   // Violations found while a channel was off or unconfigured are otherwise never sent to it.
@@ -137,8 +142,8 @@ export class Monitor {
       const add = (code, detail) => findings.push({ key: `device:${row.id}:${code}`, code, target: d.displayName, deviceId: row.id, detail, severity: 'warning' });
       if (!new RegExp(settings.namePattern).test(d.displayName)) add('name-convention', `이름 규칙 불일치: ${d.displayName}`);
       if (settings.requireTags && !d.tags.length) add('missing-tags', '태그가 지정되지 않았습니다.');
-      for (const rule of settings.tagRules.filter(r => d.displayName.startsWith(r.prefix))) {
-        if (hash(sorted(rule.tags)) !== hash(sorted(d.tags))) add(`tag-rule:${rule.prefix}`, `${rule.prefix} 장비의 태그는 ${rule.tags.join(', ')}여야 합니다. 현재: ${d.tags.join(', ') || '(없음)'}`);
+      for (const rule of settings.tagRules.filter(r => ruleMatches(r.prefix, d.displayName))) {
+        if (hash(sorted(rule.tags)) !== hash(sorted(d.tags))) add(`tag-rule:${rule.prefix}`, `${rule.prefix.startsWith('^') ? `규칙 ${rule.prefix}에 해당하는` : rule.prefix} 장비의 태그는 ${rule.tags.join(', ')}여야 합니다. 현재: ${d.tags.join(', ') || '(없음)'}`);
       }
     }
     this.reconcile('devices', findings);
