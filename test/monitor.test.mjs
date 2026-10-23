@@ -270,6 +270,17 @@ test('settings saved by an older version get new keys filled with defaults on st
   third.close();
 });
 
+test('page state carries event summaries, not full before/after values', async t => {
+  const f = setup(t);
+  f.logs([{ eventTime: '2026-10-16T09:00:00Z', action: 'UPDATE', actor: { loginName: 'a@example.com', type: 'USER' },
+    target: { type: 'TAILNET', name: 'example.com', property: 'ACL' }, old: 'x'.repeat(5000), new: 'y'.repeat(5000) }]);
+  await f.monitor.poll();
+  const [event] = f.monitor.state().events;
+  assert.equal(event.kind, 'policy');
+  assert.ok(JSON.stringify(event).length < 1000);
+  assert.equal(event.raw.actor.loginName, 'a@example.com');
+});
+
 test('backfilled tag changes chain old tags from the previous change, not from current tags', async t => {
   const f = setup(t);
   await f.monitor.poll();

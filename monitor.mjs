@@ -343,7 +343,11 @@ export class Monitor {
     }]));
     return { configured: this.source.configured, busy: this.busy, lastPoll: this.meta('lastPoll'), auditGap: this.meta('auditGap'),
       settings: this.meta('settings'), viewGroups: this.meta('viewGroups') || { groups: [], members: {} }, collectors: Object.fromEntries(['devices', 'logs'].map(key => [key, this.meta(`collector:${key}`) || {}])),
-      devices, findings, events: this.db.prepare("SELECT body FROM events WHERE source IN ('tailscale', 'devices') ORDER BY time DESC, rowid DESC LIMIT 200").all().map(row => parse(row.body)),
+      devices, findings, // Full before/after values (a whole policy file per ACL change) stay in the DB; the page only needs the summary.
+      events: this.db.prepare("SELECT body FROM events WHERE source IN ('tailscale', 'devices') ORDER BY time DESC, rowid DESC LIMIT 500").all().map(row => {
+        const { old: _old, new: _new, raw, ...event } = parse(row.body);
+        return { ...event, raw: raw && { actor: raw.actor, error: raw.error } };
+      }),
       notifications: { channels, error: channels.slack.error || channels.telegram.error || null,
         pending: channels.slack.pending + channels.telegram.pending }
     };

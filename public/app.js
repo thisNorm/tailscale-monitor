@@ -249,19 +249,19 @@ function deviceRows(devices) {
 }
 
 function historyPreview() {
-  return `<section class="panel recent-panel" aria-label="최근 등록 삭제 이력"><div class="panel-header"><div class="section-title"><span class="section-number">02</span><h2>등록 · 삭제 이력</h2></div><a href="#history" class="section-link">전체 보기 ↗</a></div><div id="recent-events">${recentEvents()}</div></section>`;
+  return `<section class="panel recent-panel" aria-label="최근 변경 이력"><div class="panel-header"><div class="section-title"><span class="section-number">02</span><h2>변경 이력</h2></div><a href="#history" class="section-link">전체 보기 ↗</a></div><div id="recent-events">${recentEvents()}</div></section>`;
 }
 
 function recentEvents() {
-  return state.events.length ? `<ol class="audit-stream">${state.events.slice(0, 4).map(e => `<li><div class="audit-time"><time datetime="${escapeHtml(e.time)}" title="${escapeHtml(date(e.time))}">${escapeHtml(ago(e.time))}</time><span class="event-badge ${e.kind}">${eventKinds[e.kind]}${e.failed ? ' 요청 실패' : ''}</span></div><strong>${escapeHtml(e.target)}</strong>${e.kind === 'tagged' ? `<small class="mono">${escapeHtml(e.oldTags.join(', ') || '(없음)')} → ${escapeHtml(e.newTags.join(', ') || '(없음)')}</small>` : ''}<div class="audit-meta"><span>계정 <b>${escapeHtml(e.actor || '미확인')}</b></span><span>경로 <b>${escapeHtml(origins[e.origin] || e.origin || '미확인')}</b></span></div></li>`).join('')}</ol>` : '<p class="empty">확인된 등록·삭제 이력이 없습니다.</p>';
+  return state.events.length ? `<ol class="audit-stream">${state.events.slice(0, 4).map(e => `<li><div class="audit-time"><time datetime="${escapeHtml(e.time)}" title="${escapeHtml(date(e.time))}">${escapeHtml(ago(e.time))}</time><span class="event-badge ${e.kind}">${eventLabel(e)}${e.failed ? ' 요청 실패' : ''}</span></div><strong>${escapeHtml(e.target)}</strong>${e.detail ? `<small class="mono">${escapeHtml(e.detail)}</small>` : e.kind === 'tagged' && e.oldTags ? `<small class="mono">${escapeHtml(e.oldTags.join(', ') || '(없음)')} → ${escapeHtml(e.newTags.join(', ') || '(없음)')}</small>` : ''}<div class="audit-meta"><span>계정 <b>${escapeHtml(e.actor || '미확인')}</b></span><span>경로 <b>${escapeHtml(origins[e.origin] || e.origin || '미확인')}</b></span></div></li>`).join('')}</ol>` : '<p class="empty">확인된 등록·삭제 이력이 없습니다.</p>';
 }
 
 function historyView() {
   return `<section class="panel" aria-label="등록 삭제 이력"><div class="toolbar"><div class="filters" aria-label="이력 필터">
-    ${[['all', '전체'], ['registered', '등록'], ['deleted', '삭제'], ['tagged', '태그 변경']].map(([value, label]) => `<button type="button" class="filter ${historyFilter === value ? 'active' : ''}" data-history-filter="${value}" aria-pressed="${historyFilter === value}">${label}</button>`).join('')}
+    ${[['all', '전체'], ['registered', '등록'], ['deleted', '삭제'], ['tagged', '태그 변경'], ['renamed', '이름 변경'], ['policy', '정책 변경'], ['changed', '기타 변경']].map(([value, label]) => `<button type="button" class="filter ${historyFilter === value ? 'active' : ''}" data-history-filter="${value}" aria-pressed="${historyFilter === value}">${label}</button>`).join('')}
     </div><label class="search"><span class="sr-only">이력 검색</span><input type="search" id="history-search" placeholder="장비명, 작업 계정 검색" value="${escapeHtml(historySearch)}"></label></div>
     <div class="table-wrap"><table class="history-table"><caption class="sr-only">장비 등록 삭제 감사 로그</caption><thead><tr><th scope="col">시각</th><th scope="col">작업</th><th scope="col">대상 장비</th><th scope="col">작업 계정</th><th scope="col">작업 경로</th></tr></thead><tbody id="history-rows">${historyRows()}</tbody></table></div>
-    <div class="table-note">최근 200건을 표시합니다. 시각·계정·작업 경로는 Tailscale 감사 로그 기준이며, 삭제된 장비의 IP는 수집 이력이 있을 때 표시됩니다.</div></section>`;
+    <div class="table-note">최근 500건을 표시합니다. 시각·계정·작업 경로는 Tailscale 감사 로그 기준이며, 삭제된 장비의 IP는 수집 이력이 있을 때 표시됩니다.</div></section>`;
 }
 
 function historyRows() {
