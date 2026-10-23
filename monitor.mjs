@@ -156,7 +156,8 @@ export class Monitor {
     const open = this.rows('findings').map(row => parse(row.body)).filter(item => !item.resolvedAt);
     const active = channels.filter(channel => this.notifiers[channel] && this.meta('settings').notificationsEnabled && this.meta('settings')[`${channel}Enabled`]);
     // The summary covers every open violation, so older undelivered alerts on that channel are superseded.
-    for (const channel of active) this.db.prepare('DELETE FROM outbox WHERE channel=? AND delivered_at IS NULL').run(channel);
+    // Change and update notices are not covered by the summary, so only violation reports are replaced.
+    for (const channel of active) this.db.prepare("DELETE FROM outbox WHERE channel=? AND delivered_at IS NULL AND text LIKE '%컨벤션 위반%'").run(channel);
     this.queue(open, channels, '현재 열린 컨벤션 위반');
   }
 
@@ -212,6 +213,9 @@ export class Monitor {
     for (const item of items) {
       const id = item.nodeId || item.id;
       const d = { ...item, displayName: item.name?.split('.')[0] || item.hostname, tags: sorted(item.tags || []) };
+      // Keep the last tag transition: the audit log for it can arrive a poll after the Devices API shows the new tags.
+      const prev = old.has(id) ? parse(old.get(id).body) : null;
+      if (prev) d.previousTags = hash(prev.tags) !== hash(d.tags) ? prev.tags : prev.previousTags;
       old.delete(id);
       this.db.prepare('INSERT OR REPLACE INTO devices VALUES (?, ?, 1)').run(id, JSON.stringify(d));
     }
@@ -249,8 +253,11 @@ export class Monitor {
               for (const log of [...result.value].sort((a, b) => Date.parse(a.eventTime) - Date.parse(b.eventTime))) {
                 const before = previousDevices.find(device => [device.savedId, device.id, device.nodeId].includes(log.target?.id));
                 const prior = log.target?.property === 'ACL_TAGS' && this.db.prepare("SELECT body FROM events WHERE json_extract(body, '$.kind')='tagged' AND json_extract(body, '$.deviceId')=? AND time < ? ORDER BY time DESC LIMIT 1").get(log.target.id, iso(log.eventTime));
-                // Without an earlier tag event, the pre-poll snapshot is only right for changes made since the last poll.
-                const oldTags = prior ? parse(prior.body).newTags : Date.parse(log.eventTime) > previousPoll ? before?.tags : null;
+                // Without an earlier tag event: a change since the last poll uses the pre-poll snapshot; one that lagged a poll uses its last transition.
+                const newTags = sorted(Array.isArray(log.new) ? log.new : []);
+                const oldTags = prior ? parse(prior.body).newTags
+                  : Date.parse(log.eventTime) > previousPoll ? before?.tags
+                  : before?.previousTags && hash(before.tags) === hash(newTags) ? before.previousTags : null;
                 const change = describeChange(log, oldTags ? { tags: oldTags } : null);
                 if (!change) continue;
                 const actor = log.actor?.loginName || log.actor?.displayName || log.actor?.type || '기록 없음';

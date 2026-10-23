@@ -138,7 +138,8 @@ export async function startServer({ env = process.env, dbPath, source, notifiers
             const previous = integrations.values();
             const values = integrations.save(input);
             applyIntegrations(values);
-            if (previous.TAILSCALE_TAILNET !== values.TAILSCALE_TAILNET) monitor.setMeta('auditCursor', null);
+            // A new tailnet is backfilled from scratch; its history must not be alerted as fresh changes.
+            if (previous.TAILSCALE_TAILNET !== values.TAILSCALE_TAILNET) { monitor.setMeta('auditCursor', null); monitor.setMeta('changeAlertsSince', null); }
             const changed = [];
             if (previous.SLACK_WEBHOOK_URL !== values.SLACK_WEBHOOK_URL) { monitor.setMeta('notification:slack', {}); changed.push('slack'); }
             if (previous.TELEGRAM_BOT_TOKEN !== values.TELEGRAM_BOT_TOKEN || previous.TELEGRAM_CHAT_ID !== values.TELEGRAM_CHAT_ID) { monitor.setMeta('notification:telegram', {}); changed.push('telegram'); }
