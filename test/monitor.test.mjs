@@ -292,3 +292,21 @@ test('backfilled tag changes chain old tags from the previous change, not from c
   const tagged = f.monitor.state().events.filter(e => e.kind === 'tagged').map(e => e.detail);
   assert.deepEqual(tagged, ['tag:field → tag:pig', '(이전 미확인) → tag:field']);
 });
+
+test('review fixes: change alerts survive a channel summary, and a lagged tag log keeps the old tags', async t => {
+  const f = setup(t);
+  const actor = { loginName: 'a@example.com', type: 'USER' };
+  await f.monitor.poll();
+  // Tag changes in the Devices API this poll, but its audit log only arrives next poll with an older timestamp.
+  f.devices([{ ...board, tags: ['tag:office'] }]);
+  f.advance(); await f.monitor.poll();
+  f.logs([{ eventTime: '2026-10-16T10:00:30Z', action: 'UPDATE', actor, target: { type: 'NODE', id: 'node-board', name: 'jetson-example-cough01.ts.net', property: 'ACL_TAGS' }, new: ['tag:office'] }]);
+  f.monitor.notifiers.slack = async () => { throw new Error('down'); };
+  f.advance(); await f.monitor.poll();
+  assert.equal(f.monitor.state().events.find(e => e.kind === 'tagged').detail, 'tag:pig → tag:office');
+  const pendingTitles = () => f.monitor.db.prepare('SELECT text FROM outbox WHERE delivered_at IS NULL').all().map(r => JSON.parse(r.text).title);
+  assert.ok(pendingTitles().some(title => title.includes('변경')));
+  f.monitor.announceOpenFindings(['slack']);
+  assert.ok(pendingTitles().some(title => title.includes('변경')), 'failed change alert is kept');
+  assert.ok(pendingTitles().some(title => title.includes('현재 열린 컨벤션 위반')));
+});
