@@ -15,7 +15,13 @@ export const demoSource = {
     actor: { type: 'USER', loginName: '예시 관리자' },
     target: { type: 'NODE', id: 'demo-board2', name: 'jetson-farm-cough02', isEphemeral: false } },
     { eventTime: '2026-10-16T07:40:00.000Z', eventGroupID: 'demo-delete', action: 'DELETE', origin: 'ADMIN_CONSOLE',
-      actor: { type: 'USER', loginName: '예시 관리자' }, target: { type: 'NODE', id: 'demo-removed', name: 'jetson-farm-cough09' } }]; }
+      actor: { type: 'USER', loginName: '예시 관리자' }, target: { type: 'NODE', id: 'demo-removed', name: 'jetson-farm-cough09' } },
+    { eventTime: '2026-10-16T08:10:00.000Z', action: 'UPDATE', origin: 'ADMIN_CONSOLE', actor: { type: 'USER', loginName: '예시 관리자' },
+      target: { type: 'NODE', id: 'demo-board2', name: 'jetson-farm-cough02', property: 'ACL_TAGS' }, new: ['tag:pig', 'tag:team-hardware'] },
+    { eventTime: '2026-10-16T08:20:00.000Z', action: 'UPDATE', origin: 'ADMIN_CONSOLE', actor: { type: 'USER', loginName: '예시 관리자' },
+      target: { type: 'NODE', id: 'demo-board1', name: 'jetson-farm-cough01', property: 'MACHINE_NAME' }, old: 'jetson-test', new: 'jetson-farm-cough01' },
+    { eventTime: '2026-10-16T08:30:00.000Z', action: 'UPDATE', origin: 'ADMIN_CONSOLE', actor: { type: 'USER', loginName: '예시 관리자' },
+      target: { type: 'TAILNET', name: 'example.com', property: 'ACL' }, old: '{\n"grants": []\n}', new: '{\n"grants": [\n{"src": ["tag:office"], "dst": ["*"], "ip": ["*"]}\n]\n}' }]; }
 };
 
 export async function seedDemo(monitor) {

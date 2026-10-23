@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Monitor } from '../monitor.mjs';
 
 const board = { nodeId: 'node-board', id: '123', hostname: 'jetson-example-cough01',
@@ -73,7 +76,8 @@ test('audit logs sharing eventGroupID retain distinct changes and deduplicate ov
   ]);
   await f.monitor.poll(); f.advance(); await f.monitor.poll();
   const events = f.monitor.state().events.filter(x => x.source === 'tailscale');
-  assert.equal(events.length, 2);
+  assert.equal(events.length, 3, 'device and user changes are all kept');
+  assert.ok(events.some(e => e.kind === 'changed' && e.label === '사용자 생성'));
   assert.equal(events[0].actor, 'admin@example.com');
   assert.equal(events[0].origin, 'ADMIN_CONSOLE');
   assert.ok(events.some(e => e.kind === 'registered'));
@@ -136,16 +140,27 @@ test('channel switches isolate Telegram delivery and one failing channel cannot 
   assert.ok(sent > 0);
 });
 
-test('tag changes between polls are recorded in history', async t => {
+test('audit-log changes after start are recorded and alerted with who did them; backfill and logins are not alerted', async t => {
   const f = setup(t);
+  const at = minutes => new Date(Date.parse('2026-10-16T10:00:00Z') + minutes * 60_000).toISOString();
+  const actor = { loginName: 'admin@example.com', type: 'USER' };
+  f.logs([{ eventTime: at(-60), action: 'UPDATE', actor, target: { type: 'NODE', id: 'node-board', name: 'old-change.ts.net', property: 'MACHINE_NAME' }, old: 'a', new: 'b' }]);
   await f.monitor.poll();
-  assert.equal(f.monitor.state().events.length, 0);
+  const before = f.delivered.length;
   f.devices([{ ...board, tags: ['tag:pig', 'tag:team-hardware'] }]);
+  f.logs([
+    { eventTime: at(1), action: 'UPDATE', actor, target: { type: 'NODE', id: 'node-board', name: 'jetson-example-cough01.ts.net', property: 'ACL_TAGS' }, new: ['tag:team-hardware', 'tag:pig'] },
+    { eventTime: at(1), action: 'UPDATE', actor, target: { type: 'TAILNET', name: 'example.com', property: 'ACL' }, old: 'a\nb', new: 'a\nc\nd' },
+    { eventTime: at(1), action: 'LOGIN', actor, target: { type: 'ADMIN_CONSOLE', name: 'Admin console' } },
+    { eventTime: at(1), action: 'CREATE', actor, target: { type: 'OAUTH_ACCESS_TOKEN', name: 'token' } }]);
   f.advance(); await f.monitor.poll();
-  f.advance(); await f.monitor.poll();
-  const tagged = f.monitor.state().events.filter(e => e.kind === 'tagged');
-  assert.equal(tagged.length, 1);
-  assert.deepEqual([tagged[0].oldTags, tagged[0].newTags], [['tag:pig'], ['tag:pig', 'tag:team-hardware']]);
+  const tagged = f.monitor.state().events.find(e => e.kind === 'tagged');
+  assert.deepEqual([tagged.target, tagged.oldTags, tagged.newTags, tagged.actor], ['jetson-example-cough01', ['tag:pig'], ['tag:pig', 'tag:team-hardware'], 'admin@example.com']);
+  assert.ok(f.monitor.state().events.some(e => e.kind === 'renamed'), 'backfill still goes to history');
+  const reports = f.delivered.slice(before).map(text => JSON.parse(text));
+  const change = reports.find(r => r.title.includes('변경'));
+  assert.deepEqual(change.sections.map(s => [s.label, s.items.map(i => i.detail)]), [
+    ['태그 변경', ['tag:pig → tag:pig, tag:team-hardware · admin@example.com']], ['정책 변경', ['+2줄 / -1줄 · admin@example.com']]]);
 });
 
 test('default name convention covers barn, poultry and office devices; empty tag list allows new tags', async t => {
@@ -232,4 +247,37 @@ test('rule note is saved as plain text up to 2000 characters', t => {
   f.monitor.saveSettings({ ...f.monitor.state().settings, ruleNote: '장비 이름은 장비-지역-닉네임' });
   assert.equal(f.monitor.state().settings.ruleNote, '장비 이름은 장비-지역-닉네임');
   assert.throws(() => f.monitor.saveSettings({ ...f.monitor.state().settings, ruleNote: 'x'.repeat(2001) }), /2000자/);
+});
+
+test('settings saved by an older version get new keys filled with defaults on start', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'tsm-'));
+  const dbPath = join(dir, 'm.sqlite');
+  const first = new Monitor({ dbPath, source: { configured: false } });
+  const old = first.meta('settings'); delete old.changeAlertsEnabled; first.setMeta('settings', { ...old, requireTags: false });
+  first.event('tagged', 'x', {}, { source: 'devices' });
+  first.setMeta('auditCursor', '2026-10-16T00:00:00.000Z');
+  first.setMeta('historySchema', 1);
+  first.close();
+  const second = new Monitor({ dbPath, source: { configured: false } });
+  assert.equal(second.meta('settings').changeAlertsEnabled, true);
+  assert.equal(second.meta('settings').requireTags, false, 'existing values are kept');
+  assert.equal(second.meta('auditCursor'), null, 'audit history is re-read once');
+  assert.equal(second.state().events.length, 0, 'poll-based tag events are replaced by audit ones');
+  second.setMeta('auditCursor', 'kept');
+  second.close();
+  const third = new Monitor({ dbPath, source: { configured: false } });
+  assert.equal(third.meta('auditCursor'), 'kept', 'migration runs only once');
+  third.close();
+});
+
+test('backfilled tag changes chain old tags from the previous change, not from current tags', async t => {
+  const f = setup(t);
+  await f.monitor.poll();
+  const actor = { loginName: 'a@example.com', type: 'USER' };
+  const tagLog = (minutes, tags) => ({ eventTime: new Date(Date.parse('2026-10-16T09:00:00Z') + minutes * 60_000).toISOString(), action: 'UPDATE', actor,
+    target: { type: 'NODE', id: 'node-board', name: 'jetson-example-cough01.ts.net', property: 'ACL_TAGS' }, new: tags });
+  f.logs([tagLog(2, ['tag:pig']), tagLog(1, ['tag:field'])]);
+  f.advance(); await f.monitor.poll();
+  const tagged = f.monitor.state().events.filter(e => e.kind === 'tagged').map(e => e.detail);
+  assert.deepEqual(tagged, ['tag:field → tag:pig', '(이전 미확인) → tag:field']);
 });

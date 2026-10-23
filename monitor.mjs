@@ -19,6 +19,7 @@ const defaults = {
   // Node IDs the team accepted as exceptions (e.g. office jetson boards); they are not checked or alerted.
   excludedDevices: [],
   notificationsEnabled: true,
+  changeAlertsEnabled: true,
   slackEnabled: true,
   telegramEnabled: true
 };
@@ -26,6 +27,35 @@ const defaults = {
 // A rule key is a name prefix, or a regex when it starts with "^" (e.g. "^[a-z0-9]+-office-" checks the region segment).
 const isPatternRule = key => key.startsWith('^') && key.length <= 200 && (() => { try { new RegExp(key); return true; } catch { return false; } })();
 const ruleMatches = (key, name) => key.startsWith('^') ? new RegExp(key).test(name) : name.startsWith(key);
+
+const typeLabels = { NODE: '장비', TAILNET: '테일넷', USER: '사용자', API_KEY: 'API 키', OAUTH_CLIENT: 'OAuth 클라이언트', WEBHOOK: '웹훅', INVITE: '초대' };
+const actionLabels = { CREATE: '생성', DELETE: '삭제', UPDATE: '변경' };
+const lines = text => new Set(String(text ?? '').split('\n').map(line => line.trim()).filter(Boolean));
+
+// Turns one configuration audit log entry into a history/alert record, or null for non-changes (logins, our own OAuth tokens).
+export function describeChange(log, before) {
+  const target = log.target || {}, property = target.property || '';
+  if (log.action === 'LOGIN' || target.type === 'OAUTH_ACCESS_TOKEN') return null;
+  const name = target.type === 'NODE' ? String(target.name || target.id || '').split('.')[0] : target.name || target.id || '';
+  if (target.type === 'NODE' && log.action === 'CREATE') return { kind: 'registered', label: '장비 등록', target: name };
+  if (target.type === 'NODE' && log.action === 'DELETE') return { kind: 'deleted', label: '장비 삭제', target: name };
+  if (target.type === 'NODE' && property === 'ACL_TAGS') {
+    const newTags = sorted(Array.isArray(log.new) ? log.new : []);
+    const oldTags = before?.tags ?? null;
+    return { kind: 'tagged', label: '태그 변경', target: name, oldTags, newTags, detail: `${oldTags ? oldTags.join(', ') || '(없음)' : '(이전 미확인)'} → ${newTags.join(', ') || '(없음)'}` };
+  }
+  if (target.type === 'NODE' && property === 'MACHINE_NAME') return { kind: 'renamed', label: '이름 변경', target: name, detail: `${log.old || '(없음)'} → ${log.new || '(없음)'}` };
+  if (target.type === 'NODE' && property === 'KEY_EXPIRY_TIME') {
+    const until = String(log.new || '');
+    return { kind: 'changed', label: '키 만료 변경', target: name, detail: !until || until.startsWith('0001-') ? '만료 없음' : `${until.slice(0, 10)}까지` };
+  }
+  if (target.type === 'TAILNET' && property === 'ACL') {
+    const [oldLines, newLines] = [lines(log.old), lines(log.new)];
+    const add = [...newLines].filter(line => !oldLines.has(line)).length, remove = [...oldLines].filter(line => !newLines.has(line)).length;
+    return { kind: 'policy', label: '정책 변경', target: '정책 파일(ACL)', detail: `+${add}줄 / -${remove}줄` };
+  }
+  return { kind: 'changed', label: `${typeLabels[target.type] || target.type || '설정'} ${actionLabels[log.action] || log.action}`, target: name, detail: property };
+}
 
 export function validateSettings(value) {
   if (!value || typeof value.namePattern !== 'string' || !value.namePattern.trim() || value.namePattern.length > 256) throw new Error('이름 규칙은 1~256자로 입력하세요.');
@@ -35,10 +65,10 @@ export function validateSettings(value) {
     || !Array.isArray(rule.tags) || !rule.tags.length || rule.tags.some(tag => typeof tag !== 'string' || !/^tag:[a-z][a-z0-9-]{0,62}$/.test(tag)))) {
     throw new Error('장비명별 규칙은 접두어 = tag:이름 형식으로 입력하세요.');
   }
-  value = { ...value, excludedDevices: value.excludedDevices ?? [], ruleNote: value.ruleNote ?? '' };
+  value = { ...value, excludedDevices: value.excludedDevices ?? [], ruleNote: value.ruleNote ?? '', changeAlertsEnabled: value.changeAlertsEnabled ?? true };
   if (typeof value.ruleNote !== 'string' || value.ruleNote.length > 2000) throw new Error('규칙 설명은 2000자 이내로 입력하세요.');
   if (!Array.isArray(value.excludedDevices) || value.excludedDevices.length > 500 || value.excludedDevices.some(id => typeof id !== 'string' || !id || id.length > 255)) throw new Error('예외 장비 목록을 확인하세요.');
-  if (['requireTags', 'notificationsEnabled', 'slackEnabled', 'telegramEnabled'].some(key => typeof value[key] !== 'boolean')) throw new Error('검사·알림 설정을 확인하세요.');
+  if (['requireTags', 'notificationsEnabled', 'changeAlertsEnabled', 'slackEnabled', 'telegramEnabled'].some(key => typeof value[key] !== 'boolean')) throw new Error('검사·알림 설정을 확인하세요.');
   return Object.fromEntries(Object.keys(defaults).map(key => [key, Array.isArray(value[key]) ? sorted(value[key]) : value[key]]));
 }
 
@@ -57,7 +87,16 @@ export class Monitor {
     this.notifiers = notifiers;
     this.clock = clock;
     this.busy = false;
-    if (!this.meta('settings')) this.setMeta('settings', defaults);
+    // Settings saved by an older version lack newer keys (e.g. changeAlertsEnabled); fill them with defaults.
+    this.setMeta('settings', { ...defaults, ...this.meta('settings') });
+    // One-time: re-read 89 days of audit logs so tag/name/policy changes from before 1.1.5 reach history
+    // (not alerted: they are older than changeAlertsSince), and drop the poll-based tag events they replace.
+    // Schema 3 also re-derives tag events, whose "before" tags were wrong in the first backfill.
+    if (this.meta('historySchema') !== 3) {
+      this.db.prepare("DELETE FROM events WHERE source='devices' OR json_extract(body, '$.kind')='tagged'").run();
+      this.setMeta('auditCursor', null);
+      this.setMeta('historySchema', 3);
+    }
   }
 
   close() { this.db.close(); }
@@ -94,6 +133,15 @@ export class Monitor {
     for (const channel of channels) {
       if (this.notifiers[channel] && settings[`${channel}Enabled`]) this.db.prepare('INSERT INTO outbox (channel, text) VALUES (?, ?)').run(channel, text);
     }
+  }
+
+  queueChanges(changes) {
+    const sections = new Map();
+    for (const change of changes) {
+      if (!sections.has(change.label)) sections.set(change.label, []);
+      sections.get(change.label).push({ target: change.target, address: '', detail: [change.detail, change.actor].filter(Boolean).join(' · ') });
+    }
+    this.queueReport(`Tailscale 변경 ${changes.length}건`, [...sections].map(([label, items]) => ({ label, items: items.slice(0, 10), more: Math.max(0, items.length - 10) })));
   }
 
   findingEntry(item) {
@@ -164,12 +212,6 @@ export class Monitor {
     for (const item of items) {
       const id = item.nodeId || item.id;
       const d = { ...item, displayName: item.name?.split('.')[0] || item.hostname, tags: sorted(item.tags || []) };
-      const before = old.get(id);
-      const oldTags = before ? parse(before.body).tags : null;
-      // Tag changes come from comparing polls; the audit-log action name for tag updates is undocumented.
-      if (before?.present && hash(oldTags) !== hash(d.tags)) {
-        this.event('tagged', d.displayName, { deviceId: id, addresses: d.addresses, oldTags, newTags: d.tags, origin: 'POLL' }, { source: 'devices', actor: '장비 수집 비교' });
-      }
       old.delete(id);
       this.db.prepare('INSERT OR REPLACE INTO devices VALUES (?, ?, 1)').run(id, JSON.stringify(d));
     }
@@ -189,6 +231,9 @@ export class Monitor {
       const cursor = this.meta('auditCursor');
       const start = new Date(Math.max(cutoff, cursor ? Date.parse(cursor) - 600_000 : cutoff));
       if (cursor && Date.parse(cursor) < cutoff) this.setMeta('auditGap', '서버 중단 기간이 원본 보관 범위를 초과했습니다. 일부 과거 변경은 조회할 수 없습니다.');
+      if (!this.meta('changeAlertsSince')) this.setMeta('changeAlertsSince', iso(this.clock()));
+      const previousDevices = this.rows('devices').map(row => ({ ...parse(row.body), savedId: row.id }));
+      const previousPoll = Date.parse(this.meta('lastPoll') || 0);
       const results = await Promise.allSettled([this.source.devices(), this.source.logs(iso(start), iso(end))]);
       for (const [index, key] of ['devices', 'logs'].entries()) {
         try {
@@ -198,16 +243,26 @@ export class Monitor {
             if (key === 'devices') this.collectDevices(result.value);
             if (key === 'logs') {
               if (!Array.isArray(result.value) || result.value.some(log => !log || typeof log.eventTime !== 'string' || Number.isNaN(Date.parse(log.eventTime)))) throw new Error('logs 응답 형식을 확인할 수 없습니다.');
-              for (const log of result.value) {
-                if (log.target?.type !== 'NODE' || !['CREATE', 'DELETE'].includes(log.action)) continue;
+              const since = Date.parse(this.meta('changeAlertsSince'));
+              const fresh = [];
+              // Oldest first, so a tag change's "before" is the previous tag change of the same device.
+              for (const log of [...result.value].sort((a, b) => Date.parse(a.eventTime) - Date.parse(b.eventTime))) {
+                const before = previousDevices.find(device => [device.savedId, device.id, device.nodeId].includes(log.target?.id));
+                const prior = log.target?.property === 'ACL_TAGS' && this.db.prepare("SELECT body FROM events WHERE json_extract(body, '$.kind')='tagged' AND json_extract(body, '$.deviceId')=? AND time < ? ORDER BY time DESC LIMIT 1").get(log.target.id, iso(log.eventTime));
+                // Without an earlier tag event, the pre-poll snapshot is only right for changes made since the last poll.
+                const oldTags = prior ? parse(prior.body).newTags : Date.parse(log.eventTime) > previousPoll ? before?.tags : null;
+                const change = describeChange(log, oldTags ? { tags: oldTags } : null);
+                if (!change) continue;
                 const actor = log.actor?.loginName || log.actor?.displayName || log.actor?.type || '기록 없음';
-                const target = log.target?.name || log.target?.id || 'Tailnet';
-                const snapshot = this.rows('devices').map(row => ({ ...parse(row.body), savedId: row.id }))
+                const snapshot = before || this.rows('devices').map(row => ({ ...parse(row.body), savedId: row.id }))
                   .find(device => [device.savedId, device.id, device.nodeId].includes(log.target?.id));
-                this.event(log.action === 'CREATE' ? 'registered' : 'deleted', target, { old: log.old, new: log.new, raw: log,
-                  deviceId: log.target?.id, origin: log.origin, addresses: snapshot?.addresses || [], failed: Boolean(log.error), ephemeral: Boolean(log.target.isEphemeral) },
+                const added = this.event(change.kind, change.target, { ...change, old: log.old, new: log.new, raw: log,
+                  deviceId: log.target?.id, origin: log.origin, addresses: snapshot?.addresses || [], failed: Boolean(log.error), ephemeral: Boolean(log.target?.isEphemeral) },
                   { source: 'tailscale', actor, time: log.eventTime, id: hash(log) });
+                // Only changes after this feature started are alerted; the 89-day backfill goes to history only.
+                if (added && Date.parse(log.eventTime) >= since && !log.error) fresh.push({ ...change, actor });
               }
+              if (fresh.length && this.meta('settings').changeAlertsEnabled) this.queueChanges(fresh);
               this.setMeta('auditCursor', iso(end));
             }
             this.setMeta(`collector:${key}`, { lastSuccess: iso(this.clock()), error: null });
