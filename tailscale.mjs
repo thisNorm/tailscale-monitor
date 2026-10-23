@@ -26,7 +26,18 @@ export class Tailscale {
     try { return await this.tokenRequest; } finally { this.tokenRequest = null; }
   }
 
+  // Connects over a slow link sometimes stall past Node's 10 s connect limit; retry those, never HTTP errors.
   async get(path) {
+    for (let attempt = 1; ; attempt++) {
+      try { return await this.request(path); }
+      catch (error) {
+        if (!error.network || attempt === 3) throw error;
+        await new Promise(done => setTimeout(done, this.retryDelayMs ?? 2000 * attempt));
+      }
+    }
+  }
+
+  async request(path) {
     try {
       const token = await this.accessToken();
       const response = await fetch(`${base}/tailnet/${encodeURIComponent(this.tailnet)}/${path}`, {
@@ -39,8 +50,8 @@ export class Tailscale {
       }
       return await response.json();
     } catch (error) {
-      if (error.name === 'TimeoutError') throw new Error('Tailscale API 응답 시간 초과. 다음 주기에 다시 수집합니다.');
-      if (error.message === 'fetch failed') throw new Error('Tailscale API에 연결할 수 없습니다. 네트워크를 확인하세요.');
+      if (error.name === 'TimeoutError') throw Object.assign(new Error('Tailscale API 응답 시간 초과(3회 시도). 다음 주기에 다시 수집합니다.'), { network: true });
+      if (error.message === 'fetch failed') throw Object.assign(new Error('Tailscale API에 연결할 수 없습니다(3회 시도). 서버 네트워크를 확인하세요.'), { network: true });
       throw error;
     }
   }

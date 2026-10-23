@@ -231,6 +231,8 @@ td small .mono { font-size: inherit; }
 .event-badge { display: inline-flex; align-items: center; border: 1px solid light-dark(var(--l-border-strong), #45536a); color: light-dark(var(--l-text-2), #b8c4d6); background: light-dark(var(--l-surface-3), #263142); padding: 1px 6px; border-radius: 3px; font-size: 12px; white-space: nowrap; }
 .event-badge.registered { color: light-dark(var(--l-green), #b1d5bf); border-color: light-dark(var(--l-green-border), #466953); background: light-dark(var(--l-green-bg), #223b2d); }
 .event-badge.tagged { color: light-dark(var(--l-amber), #e7c9a5); border-color: light-dark(var(--l-amber-border), #6b5539); background: light-dark(var(--l-amber-bg), #3a2f22); }
+.event-badge.renamed, .event-badge.changed { color: light-dark(var(--l-text-2), #c3cbd6); }
+.event-badge.policy { color: light-dark(var(--l-red), #edaaa3); border-color: light-dark(var(--l-red-border), #6b3b37); background: light-dark(var(--l-red-bg), #2a1c1d); }
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 17px; border-bottom: 1px solid var(--line); }
 .toolbar .search { width: 290px; }
 .history-table { min-width: 1000px; }

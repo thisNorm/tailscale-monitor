@@ -16,14 +16,15 @@ function presence(d) {
     + (days < 14 ? `<small class="expiry" title="${escapeHtml(date(d.expires))}">${days <= 0 ? '키 만료됨 · 재인증 필요' : `키 만료 ${escapeHtml(ago(d.expires))}`}</small>` : '');
 }
 const origins = { ADMIN_CONSOLE: '관리 콘솔', ADMIN_UI: '관리 콘솔', CONFIG_API: 'API', CONTROL: 'Tailscale 서비스', NODE: '장비에서 실행', POLL: '장비 수집 비교', IDENTITY_PROVIDER: '인증 제공자', SUPPORT_REQUEST: '지원 요청' };
-const eventKinds = { registered: '등록', deleted: '삭제', tagged: '태그 변경' };
+const eventKinds = { registered: '등록', deleted: '삭제', tagged: '태그 변경', renamed: '이름 변경', policy: '정책 변경', changed: '기타 변경' };
+const eventLabel = e => escapeHtml(e.kind === 'changed' ? e.label || eventKinds.changed : eventKinds[e.kind] || e.kind);
 const pages = {
   devices: ['장비', '태그별로 장비를 확인하고 웹에서 표시 그룹을 정리합니다.'],
-  history: ['등록 · 삭제 이력', '장비 등록·삭제와 태그 변경을 시간순으로 확인합니다.'],
+  history: ['변경 이력', '장비 등록·삭제, 태그·이름 변경, 정책 변경을 시간순으로 확인합니다.'],
   settings: ['규칙 · 알림', '검사할 컨벤션과 알림을 받을 채널을 설정합니다.']
 };
 const integrationGroups = [
-  { id: 'tailscale', label: 'Tailscale', description: '장비와 등록·삭제 이력 수집', fields: [
+  { id: 'tailscale', label: 'Tailscale', description: '장비와 변경 이력 수집', fields: [
     ['TAILSCALE_TAILNET', 'Tailnet', '예: example.com 또는 tailnet 이름'],
     ['TAILSCALE_CLIENT_ID', 'Client ID', 'OAuth Client ID'],
     ['TAILSCALE_CLIENT_SECRET', 'Client Secret', 'OAuth Client Secret']
@@ -98,7 +99,7 @@ function renderChrome() {
   $('#last-sync').textContent = `${state.lastPoll ? `마지막 검사 ${date(state.lastPoll)} · ${state.pollIntervalSec}초 간격` : '인증정보 설정 후 자동 수집을 시작합니다.'}${state.update ? ` · v${state.update.current}` : ''}`;
   const banners = [];
   if (state.demo) banners.push('<div class="banner demo-banner"><span class="banner-label">예시 환경</span><p>가상 장비와 기록으로 구성한 화면입니다. 실제 Tailscale 수집과 알림 전송은 실행하지 않습니다.</p></div>');
-  if (!state.configured) banners.push('<div class="banner warning"><p>Tailscale 연동 정보를 저장하면 장비와 등록·삭제 이력을 자동으로 가져옵니다. <a href="#settings">연동 설정 열기</a></p></div>');
+  if (!state.configured) banners.push('<div class="banner warning"><p>Tailscale 연동 정보를 저장하면 장비와 변경 이력을 자동으로 가져옵니다. <a href="#settings">연동 설정 열기</a></p></div>');
   for (const [key, item] of Object.entries(state.collectors)) {
     if (item.error) banners.push(`<div class="banner error"><p><strong>${key === 'devices' ? '장비' : '감사 로그'} 수집 실패</strong> · ${escapeHtml(item.error)}<br>마지막 성공: ${escapeHtml(date(item.lastSuccess))}. 기존 기록은 유지됩니다.</p></div>`);
   }
@@ -248,19 +249,19 @@ function deviceRows(devices) {
 }
 
 function historyPreview() {
-  return `<section class="panel recent-panel" aria-label="최근 등록 삭제 이력"><div class="panel-header"><div class="section-title"><span class="section-number">02</span><h2>등록 · 삭제 이력</h2></div><a href="#history" class="section-link">전체 보기 ↗</a></div><div id="recent-events">${recentEvents()}</div></section>`;
+  return `<section class="panel recent-panel" aria-label="최근 변경 이력"><div class="panel-header"><div class="section-title"><span class="section-number">02</span><h2>변경 이력</h2></div><a href="#history" class="section-link">전체 보기 ↗</a></div><div id="recent-events">${recentEvents()}</div></section>`;
 }
 
 function recentEvents() {
-  return state.events.length ? `<ol class="audit-stream">${state.events.slice(0, 4).map(e => `<li><div class="audit-time"><time datetime="${escapeHtml(e.time)}" title="${escapeHtml(date(e.time))}">${escapeHtml(ago(e.time))}</time><span class="event-badge ${e.kind}">${eventKinds[e.kind]}${e.failed ? ' 요청 실패' : ''}</span></div><strong>${escapeHtml(e.target)}</strong>${e.kind === 'tagged' ? `<small class="mono">${escapeHtml(e.oldTags.join(', ') || '(없음)')} → ${escapeHtml(e.newTags.join(', ') || '(없음)')}</small>` : ''}<div class="audit-meta"><span>계정 <b>${escapeHtml(e.actor || '미확인')}</b></span><span>경로 <b>${escapeHtml(origins[e.origin] || e.origin || '미확인')}</b></span></div></li>`).join('')}</ol>` : '<p class="empty">확인된 등록·삭제 이력이 없습니다.</p>';
+  return state.events.length ? `<ol class="audit-stream">${state.events.slice(0, 4).map(e => `<li><div class="audit-time"><time datetime="${escapeHtml(e.time)}" title="${escapeHtml(date(e.time))}">${escapeHtml(ago(e.time))}</time><span class="event-badge ${e.kind}">${eventLabel(e)}${e.failed ? ' 요청 실패' : ''}</span></div><strong>${escapeHtml(e.target)}</strong>${e.detail ? `<small class="mono">${escapeHtml(e.detail)}</small>` : e.kind === 'tagged' && e.oldTags ? `<small class="mono">${escapeHtml(e.oldTags.join(', ') || '(없음)')} → ${escapeHtml(e.newTags.join(', ') || '(없음)')}</small>` : ''}<div class="audit-meta"><span>계정 <b>${escapeHtml(e.actor || '미확인')}</b></span><span>경로 <b>${escapeHtml(origins[e.origin] || e.origin || '미확인')}</b></span></div></li>`).join('')}</ol>` : '<p class="empty">확인된 등록·삭제 이력이 없습니다.</p>';
 }
 
 function historyView() {
   return `<section class="panel" aria-label="등록 삭제 이력"><div class="toolbar"><div class="filters" aria-label="이력 필터">
-    ${[['all', '전체'], ['registered', '등록'], ['deleted', '삭제'], ['tagged', '태그 변경']].map(([value, label]) => `<button type="button" class="filter ${historyFilter === value ? 'active' : ''}" data-history-filter="${value}" aria-pressed="${historyFilter === value}">${label}</button>`).join('')}
+    ${[['all', '전체'], ['registered', '등록'], ['deleted', '삭제'], ['tagged', '태그 변경'], ['renamed', '이름 변경'], ['policy', '정책 변경'], ['changed', '기타 변경']].map(([value, label]) => `<button type="button" class="filter ${historyFilter === value ? 'active' : ''}" data-history-filter="${value}" aria-pressed="${historyFilter === value}">${label}</button>`).join('')}
     </div><label class="search"><span class="sr-only">이력 검색</span><input type="search" id="history-search" placeholder="장비명, 작업 계정 검색" value="${escapeHtml(historySearch)}"></label></div>
     <div class="table-wrap"><table class="history-table"><caption class="sr-only">장비 등록 삭제 감사 로그</caption><thead><tr><th scope="col">시각</th><th scope="col">작업</th><th scope="col">대상 장비</th><th scope="col">작업 계정</th><th scope="col">작업 경로</th></tr></thead><tbody id="history-rows">${historyRows()}</tbody></table></div>
-    <div class="table-note">최근 200건을 표시합니다. 시각·계정·작업 경로는 Tailscale 감사 로그 기준이며, 삭제된 장비의 IP는 수집 이력이 있을 때 표시됩니다.</div></section>`;
+    <div class="table-note">최근 500건을 표시합니다. 시각·계정·작업 경로는 Tailscale 감사 로그 기준이며, 삭제된 장비의 IP는 수집 이력이 있을 때 표시됩니다.</div></section>`;
 }
 
 function historyRows() {
@@ -269,8 +270,8 @@ function historyRows() {
     .filter(e => [e.target, e.actor, e.origin, ...e.addresses || []].join(' ').toLowerCase().includes(query));
   if (!events.length) return '<tr><td colspan="5" class="empty">표시할 등록·삭제 기록이 없습니다.</td></tr>';
   return events.map(e => `<tr><td class="mono"><time datetime="${escapeHtml(e.time)}" title="${escapeHtml(e.time)}">${escapeHtml(date(e.time))}</time><small>${escapeHtml(ago(e.time))}</small></td>
-    <td><span class="event-badge ${e.kind}">${eventKinds[e.kind]}</span>${e.failed ? '<small class="red">실패한 요청</small>' : ''}${e.ephemeral ? '<small>임시 노드</small>' : ''}</td>
-    <td class="device-cell"><strong>${escapeHtml(e.target)}</strong>${e.kind === 'tagged' ? `<small class="mono">${escapeHtml(e.oldTags.join(', ') || '(없음)')} → ${escapeHtml(e.newTags.join(', ') || '(없음)')}</small>` : ''}${e.addresses?.length ? `<small class="mono">${e.addresses.map(escapeHtml).join(' · ')}</small>` : ''}</td>
+    <td><span class="event-badge ${e.kind}">${eventLabel(e)}</span>${e.failed ? '<small class="red">실패한 요청</small>' : ''}${e.ephemeral ? '<small>임시 노드</small>' : ''}</td>
+    <td class="device-cell"><strong>${escapeHtml(e.target)}</strong>${e.detail ? `<small class="mono">${escapeHtml(e.detail)}</small>` : e.kind === 'tagged' && e.oldTags ? `<small class="mono">${escapeHtml(e.oldTags.join(', ') || '(없음)')} → ${escapeHtml(e.newTags.join(', ') || '(없음)')}</small>` : ''}${e.addresses?.length ? `<small class="mono">${e.addresses.map(escapeHtml).join(' · ')}</small>` : ''}</td>
     <td>${escapeHtml(e.actor)}${e.raw && !e.raw.actor?.loginName ? `<small>${escapeHtml(e.raw?.actor?.type || '행위자 정보 없음')}</small>` : ''}</td>
     <td>${escapeHtml(origins[e.origin] || e.origin || '기록 없음')}${e.raw?.error ? `<small class="red">${escapeHtml(e.raw.error)}</small>` : ''}</td></tr>`).join('');
 }
@@ -289,7 +290,8 @@ function toggle(name, label, description, extra = '') {
 
 function notificationControls() {
   return `<div id="notification-controls"><div class="notification-heading"><h3>알림 채널</h3></div>
-    ${toggle('notificationsEnabled', '전체 알림', '이름·태그 컨벤션 위반만 알림')}
+    ${toggle('notificationsEnabled', '전체 알림', '컨벤션 위반과 변경 알림 모두')}
+    ${toggle('changeAlertsEnabled', '변경 알림', '장비 등록·삭제, 태그·이름, 정책 변경')}
     ${toggle('telegramEnabled', 'Telegram', '01 · 개인 테스트', `<div class="channel-status">${escapeHtml(channelStatus('telegram'))}</div>`)}
     ${toggle('slackEnabled', 'Slack', '02 · 팀 공용 운영', `<div class="channel-status">${escapeHtml(channelStatus('slack'))}</div>`)}</div>`;
 }

@@ -87,17 +87,19 @@ test('UC2 a field board registered with an extra team tag is logged and alerted 
   assert.deepEqual(latest.sections.flatMap(x => x.items.map(i => i.target)), ['jetson-jinju-cough02'], 'only the new device is alerted');
 });
 
-test('UC3 fixing the tag in Tailscale shows a tag change in history and resolves the violation silently', async t => {
+test('UC3 fixing the tag in Tailscale logs who changed it, alerts the change and resolves the violation', async t => {
   const e = await setup(t);
   e.tailnet.devices.push(device('jetson-jinju-cough02', ['tag:pig', 'tag:team-hardware'], '100.64.0.3'));
   await e.poll();
   const alerts = e.sent.slack.length;
   e.tailnet.devices.at(-1).tags = ['tag:pig'];
+  e.tailnet.logs.push({ ...log('UPDATE', 'jetson-jinju-cough02', 0), target: { type: 'NODE', id: 'n-jetson-jinju-cough02', name: 'jetson-jinju-cough02.tail.ts.net', property: 'ACL_TAGS' }, new: ['tag:pig'] });
   const s = await e.poll();
   const tagged = s.events.find(x => x.kind === 'tagged');
-  assert.deepEqual([tagged.target, tagged.oldTags, tagged.newTags], ['jetson-jinju-cough02', ['tag:pig', 'tag:team-hardware'], ['tag:pig']]);
+  assert.deepEqual([tagged.target, tagged.oldTags, tagged.newTags, tagged.actor], ['jetson-jinju-cough02', ['tag:pig', 'tag:team-hardware'], ['tag:pig'], 'ops@example.com']);
   assert.ok(!e.open(s).some(x => x.startsWith('jetson-jinju')));
-  assert.equal(e.sent.slack.length, alerts);
+  assert.equal(e.sent.slack.length, alerts + 1, 'one change alert, no violation alert');
+  assert.match(e.reports('slack').at(-1).title, /변경 1건/);
 });
 
 test('UC4 marking an office device as an exception removes it from checks and alerts; releasing re-checks it', async t => {
