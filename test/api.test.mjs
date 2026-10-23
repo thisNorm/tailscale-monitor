@@ -150,3 +150,24 @@ test('reports end with Tailscale and monitoring buttons; Telegram skips a local 
   assert.deepEqual(telegramMessage(text, links).reply_markup.inline_keyboard[0].map(b => b.text), ['Tailscale 콘솔']);
   assert.equal(telegramMessage(text, { ...links, monitor: 'http://100.64.0.5:8787' }).reply_markup.inline_keyboard[0].length, 2);
 });
+
+test('transient connection failures are retried; HTTP errors are not', async t => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let calls = 0, status = 200;
+  globalThis.fetch = async url => {
+    if (String(url).endsWith('/oauth/token')) return Response.json({ access_token: 'x', expires_in: 3600 });
+    calls++;
+    if (calls <= 2) throw new TypeError('fetch failed');
+    return status === 200 ? Response.json({ devices: [] }) : new Response('', { status });
+  };
+  const source = new Tailscale({ TAILSCALE_TAILNET: 'example.com', TAILSCALE_CLIENT_ID: 'id', TAILSCALE_CLIENT_SECRET: clientSecret });
+  source.retryDelayMs = 1;
+  assert.deepEqual(await source.devices(), []);
+  assert.equal(calls, 3);
+  calls = 2; status = 403;
+  await assert.rejects(source.devices(), /HTTP 403/);
+  assert.equal(calls, 3, 'HTTP errors are not retried');
+  calls = -10;
+  await assert.rejects(source.devices(), /연결할 수 없습니다\(3회 시도\)/);
+});
