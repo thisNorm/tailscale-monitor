@@ -156,7 +156,8 @@ export class Monitor {
     const open = this.rows('findings').map(row => parse(row.body)).filter(item => !item.resolvedAt);
     const active = channels.filter(channel => this.notifiers[channel] && this.meta('settings').notificationsEnabled && this.meta('settings')[`${channel}Enabled`]);
     // The summary covers every open violation, so older undelivered alerts on that channel are superseded.
-    for (const channel of active) this.db.prepare('DELETE FROM outbox WHERE channel=? AND delivered_at IS NULL').run(channel);
+    // Change and update notices are not covered by the summary, so only violation reports are replaced.
+    for (const channel of active) this.db.prepare("DELETE FROM outbox WHERE channel=? AND delivered_at IS NULL AND text LIKE '%컨벤션 위반%'").run(channel);
     this.queue(open, channels, '현재 열린 컨벤션 위반');
   }
 
