@@ -63,8 +63,7 @@ test('UC1 first collection alerts existing violations once, split by kind', asyn
   const s = await e.poll();
   assert.deepEqual(e.open(s), ['ubuntu:missing-tags', 'ubuntu:name-convention']);
   const [report] = e.reports('telegram');
-  assert.deepEqual(report.sections.map(x => [x.label, x.items.map(i => `${i.target} ${i.address} ${i.detail}`)]), [
-    ['이름 규칙 위반', ['ubuntu 100.64.0.2 이름 규칙 불일치']], ['태그 지정 위반', ['ubuntu 100.64.0.2 태그 없음']]]);
+  assert.deepEqual(report.items.map(i => `${i.target} ${i.detail}`), ['ubuntu 이름 규칙 안 맞음', 'ubuntu 태그 없음']);
   assert.equal(e.sent.slack.length, 1);
   await e.poll();
   assert.equal(e.sent.telegram.length, 1, 'same violation must not repeat');
@@ -84,7 +83,7 @@ test('UC2 a field board registered with an extra team tag is logged and alerted 
   assert.deepEqual(created.addresses, ['100.64.0.3']);
   assert.ok(e.open(s).includes('jetson-jinju-cough02:tag-rule:jetson-'));
   const latest = e.reports('slack').at(-1);
-  assert.deepEqual(latest.sections.flatMap(x => x.items.map(i => i.target)), ['jetson-jinju-cough02'], 'only the new device is alerted');
+  assert.deepEqual(latest.items.map(i => i.target), ['jetson-jinju-cough02'], 'only the new device is alerted');
 });
 
 test('UC3 fixing the tag in Tailscale logs who changed it, alerts the change and resolves the violation', async t => {
@@ -150,7 +149,7 @@ test('UC7 personal Telegram test first, then team Slack: turning a channel on se
   s = await e.state();
   await e.post('/api/settings', { ...s.settings, slackEnabled: true });
   await e.poll();
-  assert.match(e.reports('slack').at(-1).title, /현재 열린 컨벤션 위반 3건/);
+  assert.match(e.reports('slack').at(-1).title, /현재 남은 규칙 위반 3건/);
   assert.equal(e.sent.telegram.length, 2, 'telegram is not re-sent');
   s = await e.state();
   await e.post('/api/settings', { ...s.settings, notificationsEnabled: false });

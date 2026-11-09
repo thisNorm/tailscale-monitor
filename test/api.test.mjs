@@ -129,18 +129,19 @@ test('empty chunks do not discard events from other audit chunks', async t => {
   assert.equal(chunk, 3);
 });
 
-test('reports render as Slack blocks and Telegram HTML with escaped device names', () => {
-  const text = JSON.stringify({ title: 'Tailscale 새 컨벤션 위반 2건', time: '2026-10-19T04:07:58.033Z', sections: [
-    { label: '이름 규칙 위반', items: [{ target: 'ubuntu<!channel>', address: '100.64.10.1', detail: '이름 규칙 불일치' }], more: 0 },
-    { label: '태그 지정 위반', items: [{ target: 'minipc-01', address: '100.64.10.2', detail: '태그 없음' }], more: 3 }] });
-  const slack = slackMessage(text);
-  assert.deepEqual(slack.blocks.map(b => b.type), ['header', 'context', 'divider', 'section', 'divider', 'section']);
-  assert.match(slack.blocks[1].elements[0].text, /^2026-10-19 13:07 KST · 이름 규칙 위반 1건 · 태그 지정 위반 4건$/);
-  assert.ok(!JSON.stringify(slack).includes('<!channel>'));
-  assert.match(slack.blocks[5].text.text, /외 3건/);
+test('reports render one line per item in Slack and Telegram with escaped names; old queued reports still render', () => {
+  const text = JSON.stringify({ title: '🔄 Tailscale 변경 2건', time: '2026-10-19T04:07:58.033Z', more: 3, buttons: ['console'], items: [
+    { label: '태그 변경', target: 'ubuntu<!channel>', detail: 'field → office', actor: 'kim' },
+    { label: '장비 등록', target: 'minipc-01', detail: '', actor: '' }] });
+  const slack = slackMessage(text, { console: 'https://c', monitor: 'https://m' });
+  assert.deepEqual(slack.blocks.map(b => b.type), ['section', 'actions']);
+  assert.equal(slack.blocks[0].text.text, '*🔄 Tailscale 변경 2건*  ·  10/19 13:07\n• [태그 변경] *ubuntu&lt;!channel&gt;* — field → office  · kim\n• [장비 등록] *minipc-01*\n외 3건 · 모니터링 화면에서 확인');
+  assert.deepEqual(slack.blocks[1].elements.map(e => e.text.text), ['Tailscale 콘솔']);
   const telegram = telegramMessage(text);
   assert.equal(telegram.parse_mode, 'HTML');
-  assert.ok(telegram.text.includes('<b>ubuntu&lt;!channel&gt;</b>  <code>100.64.10.1</code>\n    이름 규칙 불일치'));
+  assert.ok(telegram.text.includes('• [태그 변경] <b>ubuntu&lt;!channel&gt;</b> — field → office  · kim'));
+  const old = JSON.stringify({ title: 't', time: '2026-10-19T04:07:58.033Z', sections: [{ label: '이름 규칙 위반', items: [{ target: 'a', address: '1', detail: 'x' }], more: 0 }] });
+  assert.match(slackMessage(old).blocks[0].text.text, /• \[이름 규칙 위반\] \*a\* — x/);
 });
 
 test('reports end with Tailscale and monitoring buttons; Telegram skips a local monitoring URL', () => {

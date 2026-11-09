@@ -71,8 +71,8 @@ export async function startServer({ env = process.env, dbPath, source, notifiers
       const latest = latestVersion(await fetchTags(updates));
       Object.assign(update, { latest: isNewer(latest, currentVersion) ? latest : null, checkedAt: new Date().toISOString(), error: null });
       if (update.latest && monitor.meta('updateAnnounced') !== update.latest) {
-        monitor.queueReport(`Tailscale 모니터링 새 버전 ${update.latest}`, [{ label: '업데이트 가능', more: 0, items: [{ target: `${currentVersion} → ${update.latest}`, address: '',
-          detail: update.enabled ? '모니터링 화면 상단의 업데이트 버튼으로 적용합니다.' : '서버에서 이미지를 받아 다시 실행하세요.' }] }]);
+        monitor.queueReport(`🆕 모니터링 새 버전 ${update.latest}`, [{ target: `현재 ${currentVersion} → ${update.latest}`,
+          detail: update.enabled ? '화면 위 업데이트 버튼으로 적용' : '서버에서 이미지를 받아 다시 실행' }], undefined, ['monitor']);
         monitor.setMeta('updateAnnounced', update.latest);
       }
     } catch (error) { Object.assign(update, { checkedAt: new Date().toISOString(), error: error.message }); }

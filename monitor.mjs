@@ -28,33 +28,74 @@ const defaults = {
 const isPatternRule = key => key.startsWith('^') && key.length <= 200 && (() => { try { new RegExp(key); return true; } catch { return false; } })();
 const ruleMatches = (key, name) => key.startsWith('^') ? new RegExp(key).test(name) : name.startsWith(key);
 
-const typeLabels = { NODE: '장비', TAILNET: '테일넷', USER: '사용자', API_KEY: 'API 키', OAUTH_CLIENT: 'OAuth 클라이언트', WEBHOOK: '웹훅', INVITE: '초대' };
-const actionLabels = { CREATE: '생성', DELETE: '삭제', UPDATE: '변경' };
+const tagText = tags => tags.map(tag => tag.replace(/^tag:/, '')).join(', ');
+const roles = { Owner: '소유자', Admin: '관리자', Member: '멤버', 'Network admin': '네트워크 관리자', 'IT admin': 'IT 관리자', 'Billing admin': '결제 관리자', Auditor: '감사자' };
+// Every user is also a Member; show only the extra roles when there are any.
+const roleText = value => { const list = (Array.isArray(value) ? value : [value]).filter(Boolean); return (list.length > 1 ? list.filter(role => role !== 'Member') : list).map(role => roles[role] || role).join(', ') || '없음'; };
 const lines = text => new Set(String(text ?? '').split('\n').map(line => line.trim()).filter(Boolean));
+// Tailscale addresses (100.x, fd7a:115c:a1e0::) are the device itself; anything else in ALLOWED_IPS is a shared subnet.
+const subnets = value => (Array.isArray(value) ? value : []).filter(ip => typeof ip === 'string' && !/^100\.|^fd7a:115c:a1e0:/i.test(ip));
+const listText = items => items.length > 1 ? `${items[0]} 외 ${items.length - 1}개` : items[0] || '';
 
-// Turns one configuration audit log entry into a history/alert record, or null for non-changes (logins, our own OAuth tokens).
+export const tagChangeText = (oldTags, newTags) => !newTags.length ? '태그 지움'
+  : oldTags ? `${tagText(oldTags) || '없음'} → ${tagText(newTags)}` : `${tagText(newTags)}(으)로 지정`;
+
+// Turns one configuration audit log entry into a history/alert record in plain words, or null for non-changes (logins, our own OAuth tokens).
+// quiet: kept in history only — routine or duplicate records nobody needs pinged about.
 export function describeChange(log, before) {
-  const target = log.target || {}, property = target.property || '';
-  if (log.action === 'LOGIN' || target.type === 'OAUTH_ACCESS_TOKEN') return null;
-  const name = target.type === 'NODE' ? String(target.name || target.id || '').split('.')[0] : target.name || target.id || '';
-  if (target.type === 'NODE' && log.action === 'CREATE') return { kind: 'registered', label: '장비 등록', target: name };
-  if (target.type === 'NODE' && log.action === 'DELETE') return { kind: 'deleted', label: '장비 삭제', target: name };
-  if (target.type === 'NODE' && property === 'ACL_TAGS') {
-    const newTags = sorted(Array.isArray(log.new) ? log.new : []);
-    const oldTags = before?.tags ?? null;
-    return { kind: 'tagged', label: '태그 변경', target: name, oldTags, newTags, detail: `${oldTags ? oldTags.join(', ') || '(없음)' : '(이전 미확인)'} → ${newTags.join(', ') || '(없음)'}` };
+  const target = log.target || {}, property = target.property || '', action = log.action, type = target.type;
+  if (['LOGIN', 'LOGOUT'].includes(action) && type !== 'NODE' || type === 'OAUTH_ACCESS_TOKEN') return null;
+  const name = type === 'NODE' ? String(target.name || target.id || '').split('.')[0] : target.name || target.id || '';
+  const change = (kind, label, item, detail = '', quiet = false) => ({ kind, label, target: item, detail, ...(quiet ? { quiet } : {}) });
+  if (type === 'NODE') {
+    if (action === 'CREATE') return change('registered', '장비 등록', name);
+    if (action === 'DELETE') return change('deleted', '장비 삭제', name);
+    if (action === 'LOGOUT') return change('changed', '장비 로그아웃', name, '', true);
+    if (property === 'ACL_TAGS') {
+      const newTags = sorted(Array.isArray(log.new) ? log.new : []), oldTags = before?.tags ?? null;
+      return { ...change('tagged', '태그 변경', name, tagChangeText(oldTags, newTags)), oldTags, newTags };
+    }
+    if (property === 'MACHINE_NAME') return log.old ? change('renamed', '이름 변경', log.new || name, log.new ? `이전 이름 ${log.old}` : '기본 이름으로 되돌림')
+      : change('renamed', '이름 지정', log.new || name, '', true);
+    if (property === 'KEY_EXPIRY_TIME') return action === 'EXPIRED' ? change('changed', '접속 만료됨', name, '다시 로그인해야 연결됨')
+      : change('changed', '접속 만료일', name, !log.new || String(log.new).startsWith('0001-') ? '만료 없음' : `${String(log.new).slice(0, 10)}까지`, true);
+    if (property === 'KEY_EXPIRY' && ['ENABLE', 'DISABLE'].includes(action)) return action === 'DISABLE'
+      ? change('changed', '접속 만료 끔', name, '재로그인 없이 계속 접속') : change('changed', '접속 만료 켬', name, '주기적으로 재로그인 필요');
+    if (property === 'ALLOWED_IPS' || property === 'AUTO_APPROVED_ROUTES') {
+      const [oldNets, newNets] = [subnets(log.old), subnets(log.new)];
+      const added = newNets.filter(ip => !oldNets.includes(ip)), removed = oldNets.filter(ip => !newNets.includes(ip));
+      const detail = [added.length && `${listText(added)} 추가`, removed.length && `${listText(removed)} 제거`].filter(Boolean).join(', ');
+      return change('changed', '내부망 연결', name, detail, !detail);
+    }
   }
-  if (target.type === 'NODE' && property === 'MACHINE_NAME') return { kind: 'renamed', label: '이름 변경', target: name, detail: `${log.old || '(없음)'} → ${log.new || '(없음)'}` };
-  if (target.type === 'NODE' && property === 'KEY_EXPIRY_TIME') {
-    const until = String(log.new || '');
-    return { kind: 'changed', label: '키 만료 변경', target: name, detail: !until || until.startsWith('0001-') ? '만료 없음' : `${until.slice(0, 10)}까지` };
-  }
-  if (target.type === 'TAILNET' && property === 'ACL') {
+  if (type === 'TAILNET' && property === 'ACL') {
     const [oldLines, newLines] = [lines(log.old), lines(log.new)];
     const add = [...newLines].filter(line => !oldLines.has(line)).length, remove = [...oldLines].filter(line => !newLines.has(line)).length;
-    return { kind: 'policy', label: '정책 변경', target: '정책 파일(ACL)', detail: `+${add}줄 / -${remove}줄` };
+    return change('policy', '정책 변경', '접근 정책', [add && `${add}줄 추가`, remove && `${remove}줄 삭제`].filter(Boolean).join(', ') || '내용 정리');
   }
-  return { kind: 'changed', label: `${typeLabels[target.type] || target.type || '설정'} ${actionLabels[log.action] || log.action}`, target: name, detail: property };
+  if (type === 'TAILNET' && property === 'DNS_CONFIG') return change('changed', '설정 변경', 'DNS 서버');
+  if (type === 'TAILNET' && property === 'USER_APPROVAL_REQUIRED') return change('changed', '설정 변경', '새 사용자 승인 필수', action === 'ENABLE' ? '켬' : '끔');
+  if (type === 'USER') {
+    if (property === 'USER_ROLE') return change('changed', '사용자 권한', name, `${roleText(log.old)} → ${roleText(log.new)}`);
+    const label = { CREATE: '사용자 추가', APPROVE: '사용자 승인', DELETE: '사용자 삭제', SUSPEND: '사용자 정지', RESTORE: '사용자 복구' }[action];
+    if (label) return change('changed', label, name);
+  }
+  if (type === 'INVITE' && property === 'TAILNET_INVITE') {
+    const label = { CREATE: '사용자 초대', ACCEPT: '초대 수락', DELETE: '초대 취소' }[action];
+    if (label) return change('changed', label, action === 'ACCEPT' && log.actor?.loginName || '초대 링크');
+  }
+  if (type === 'INVITE' && property === 'NODE_SHARE') {
+    if (action === 'CREATE') return change('changed', '장비 공유', '공유 링크 생성');
+    if (action === 'ACCEPT') return change('changed', '장비 공유', '공유 링크 수락', '', true);
+  }
+  if (type === 'SHARE' && action === 'CREATE') return change('changed', '장비 공유', String(target.name || '').match(/"([^".]+)/)?.[1] || '장비', '다른 계정에 공유됨');
+  if (type === 'API_KEY') {
+    // One-off auth keys are created and consumed automatically while adding a device.
+    const auto = target.name === 'Auth key' && (action !== 'CREATE' || /auto-generated/.test(log.new?.description || ''));
+    const label = { CREATE: '키 발급', REVOKE: '키 폐기', EXPIRED: '키 만료' }[action];
+    if (label) return change('changed', `${target.name === 'Auth key' ? '등록용 ' : 'API '}${label}`, log.new?.description || target.name || '', '', auto || action === 'EXPIRED');
+  }
+  return change('changed', '기타 변경', name, [type, action, property].filter(Boolean).join(' '));
 }
 
 export function validateSettings(value) {
@@ -92,10 +133,20 @@ export class Monitor {
     // One-time: re-read 89 days of audit logs so tag/name/policy changes from before 1.1.5 reach history
     // (not alerted: they are older than changeAlertsSince), and drop the poll-based tag events they replace.
     // Schema 3 also re-derives tag events, whose "before" tags were wrong in the first backfill.
-    if (this.meta('historySchema') !== 3) {
+    if ((this.meta('historySchema') ?? 0) < 3) {
       this.db.prepare("DELETE FROM events WHERE source='devices' OR json_extract(body, '$.kind')='tagged'").run();
       this.setMeta('auditCursor', null);
-      this.setMeta('historySchema', 3);
+    }
+    // Schema 4: stored history is relabelled in plain words; console/web logouts are dropped.
+    if (this.meta('historySchema') !== 4) {
+      for (const row of this.db.prepare("SELECT id, body FROM events WHERE source='tailscale'").all()) {
+        const body = parse(row.body);
+        if (!body.raw?.action) continue;
+        const change = describeChange(body.raw, body.kind === 'tagged' ? { tags: body.oldTags } : null);
+        if (!change) this.db.prepare('DELETE FROM events WHERE id=?').run(row.id);
+        else this.db.prepare('UPDATE events SET body=? WHERE id=?').run(JSON.stringify({ ...body, ...change, quiet: change.quiet }), row.id);
+      }
+      this.setMeta('historySchema', 4);
     }
   }
 
@@ -117,38 +168,33 @@ export class Monitor {
   }
 
   // Outbox rows hold a JSON report; each sender renders it in its own format (Slack Block Kit, Telegram HTML).
-  queue(items, channels = ['slack', 'telegram'], title = '새 컨벤션 위반') {
+  queue(items, channels = ['slack', 'telegram'], title = '⚠️ 새 규칙 위반') {
     const settings = this.meta('settings');
     if (!items.length || !settings.notificationsEnabled) return;
-    const section = (label, list) => ({ label, items: list.slice(0, 10).map(item => this.findingEntry(item)), more: Math.max(0, list.length - 10) });
-    this.queueReport(`Tailscale ${title} ${items.length}건`, [
-      section('이름 규칙 위반', items.filter(item => item.code === 'name-convention')),
-      section('태그 지정 위반', items.filter(item => item.code !== 'name-convention'))].filter(item => item.items.length), channels);
+    // Name problems first, so one device's name and tag lines read together per kind.
+    const ordered = [...items].sort((a, b) => (b.code === 'name-convention') - (a.code === 'name-convention'));
+    this.queueReport(`${title} ${items.length}건`, ordered.map(item => this.findingEntry(item)), channels);
   }
 
-  queueReport(title, sections, channels = ['slack', 'telegram']) {
+  // A report is one line per item: [label] target — detail · actor. buttons: which links to show.
+  queueReport(title, items, channels = ['slack', 'telegram'], buttons = ['console', 'monitor']) {
     const settings = this.meta('settings');
     if (!settings.notificationsEnabled) return;
-    const text = JSON.stringify({ title, time: iso(this.clock()), sections });
+    const text = JSON.stringify({ title, time: iso(this.clock()), items: items.slice(0, 15), more: Math.max(0, items.length - 15), buttons });
     for (const channel of channels) {
       if (this.notifiers[channel] && settings[`${channel}Enabled`]) this.db.prepare('INSERT INTO outbox (channel, text) VALUES (?, ?)').run(channel, text);
     }
   }
 
   queueChanges(changes) {
-    const sections = new Map();
-    for (const change of changes) {
-      if (!sections.has(change.label)) sections.set(change.label, []);
-      sections.get(change.label).push({ target: change.target, address: '', detail: [change.detail, change.actor].filter(Boolean).join(' · ') });
-    }
-    this.queueReport(`Tailscale 변경 ${changes.length}건`, [...sections].map(([label, items]) => ({ label, items: items.slice(0, 10), more: Math.max(0, items.length - 10) })));
+    this.queueReport(`🔄 Tailscale 변경 ${changes.length}건`, changes.map(change => ({ label: change.label, target: change.target, detail: change.detail,
+      // Short name is enough inside the team; the full account stays in history. Skip it when the target already is that account.
+      actor: change.actor && change.actor !== change.target && change.actor.includes('@') ? change.actor.split('@')[0] : '' })), undefined, ['console']);
   }
 
   findingEntry(item) {
-    const device = parse(this.db.prepare('SELECT body FROM devices WHERE id=?').get(item.deviceId)?.body);
-    return { target: item.target, address: device?.addresses?.find(a => !a.includes(':')) || device?.addresses?.[0] || '주소 미확인',
-      // Alerts stay short; the full reason (rule, current tags) is on the monitoring page.
-      detail: item.code === 'name-convention' ? '이름 규칙 불일치' : item.code === 'missing-tags' ? '태그 없음' : '태그 규칙 불일치' };
+    // Alerts stay short; the full reason (rule, current tags) is on the monitoring page.
+    return { target: item.target, detail: item.code === 'name-convention' ? '이름 규칙 안 맞음' : item.code === 'missing-tags' ? '태그 없음' : '태그 규칙 안 맞음' };
   }
 
   // Violations found while a channel was off or unconfigured are otherwise never sent to it.
@@ -157,8 +203,8 @@ export class Monitor {
     const active = channels.filter(channel => this.notifiers[channel] && this.meta('settings').notificationsEnabled && this.meta('settings')[`${channel}Enabled`]);
     // The summary covers every open violation, so older undelivered alerts on that channel are superseded.
     // Change and update notices are not covered by the summary, so only violation reports are replaced.
-    for (const channel of active) this.db.prepare("DELETE FROM outbox WHERE channel=? AND delivered_at IS NULL AND text LIKE '%컨벤션 위반%'").run(channel);
-    this.queue(open, channels, '현재 열린 컨벤션 위반');
+    for (const channel of active) this.db.prepare("DELETE FROM outbox WHERE channel=? AND delivered_at IS NULL AND (text LIKE '%규칙 위반%' OR text LIKE '%컨벤션 위반%')").run(channel);
+    this.queue(open, channels, '📋 현재 남은 규칙 위반');
   }
 
   reconcile(scope, expected) {
@@ -267,7 +313,7 @@ export class Monitor {
                   deviceId: log.target?.id, origin: log.origin, addresses: snapshot?.addresses || [], failed: Boolean(log.error), ephemeral: Boolean(log.target?.isEphemeral) },
                   { source: 'tailscale', actor, time: log.eventTime, id: hash(log) });
                 // Only changes after this feature started are alerted; the 89-day backfill goes to history only.
-                if (added && Date.parse(log.eventTime) >= since && !log.error) fresh.push({ ...change, actor });
+                if (added && !change.quiet && Date.parse(log.eventTime) >= since && !log.error) fresh.push({ ...change, actor });
               }
               if (fresh.length && this.meta('settings').changeAlertsEnabled) this.queueChanges(fresh);
               this.setMeta('auditCursor', iso(end));

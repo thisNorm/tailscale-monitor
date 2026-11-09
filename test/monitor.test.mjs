@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Monitor } from '../monitor.mjs';
+import { Monitor, describeChange } from '../monitor.mjs';
 
 const board = { nodeId: 'node-board', id: '123', hostname: 'jetson-example-cough01',
   name: 'jetson-example-cough01.example.ts.net', addresses: ['100.100.1.10'],
@@ -77,7 +77,7 @@ test('audit logs sharing eventGroupID retain distinct changes and deduplicate ov
   await f.monitor.poll(); f.advance(); await f.monitor.poll();
   const events = f.monitor.state().events.filter(x => x.source === 'tailscale');
   assert.equal(events.length, 3, 'device and user changes are all kept');
-  assert.ok(events.some(e => e.kind === 'changed' && e.label === '사용자 생성'));
+  assert.ok(events.some(e => e.kind === 'changed' && e.label === '사용자 추가'));
   assert.equal(events[0].actor, 'admin@example.com');
   assert.equal(events[0].origin, 'ADMIN_CONSOLE');
   assert.ok(events.some(e => e.kind === 'registered'));
@@ -159,8 +159,9 @@ test('audit-log changes after start are recorded and alerted with who did them; 
   assert.ok(f.monitor.state().events.some(e => e.kind === 'renamed'), 'backfill still goes to history');
   const reports = f.delivered.slice(before).map(text => JSON.parse(text));
   const change = reports.find(r => r.title.includes('변경'));
-  assert.deepEqual(change.sections.map(s => [s.label, s.items.map(i => i.detail)]), [
-    ['태그 변경', ['tag:pig → tag:pig, tag:team-hardware · admin@example.com']], ['정책 변경', ['+2줄 / -1줄 · admin@example.com']]]);
+  assert.deepEqual(change.items.map(i => [i.label, i.target, i.detail, i.actor]), [
+    ['태그 변경', 'jetson-example-cough01', 'pig → pig, team-hardware', 'admin'], ['정책 변경', '접근 정책', '2줄 추가, 1줄 삭제', 'admin']]);
+  assert.deepEqual(change.buttons, ['console']);
 });
 
 test('default name convention covers barn, poultry and office devices; empty tag list allows new tags', async t => {
@@ -184,8 +185,8 @@ test('turning a channel on sends violations that were found while it was off', a
   f.advance(); await f.monitor.poll();
   assert.equal(f.delivered.length, 1);
   const report = JSON.parse(f.delivered[0]);
-  assert.match(report.title, /현재 열린 컨벤션 위반 2건/);
-  assert.equal(report.sections[0].items[0].detail, '태그 없음');
+  assert.match(report.title, /현재 남은 규칙 위반 2건/);
+  assert.equal(report.items[0].detail, '태그 없음');
 });
 
 test('summary replaces older undelivered alerts on the same channel', async t => {
@@ -198,12 +199,12 @@ test('summary replaces older undelivered alerts on the same channel', async t =>
   assert.equal(f.monitor.state().notifications.channels.slack.pending, 1);
 });
 
-test('alerts are split into name and tag sections, and excluded devices are not checked', async t => {
+test('alerts list name problems before tag problems, and excluded devices are not checked', async t => {
   const f = setup(t);
   f.devices([{ ...board, name: 'badname.example.ts.net', tags: [] }]);
   await f.monitor.poll();
-  assert.deepEqual(JSON.parse(f.delivered[0]).sections.map(s => [s.label, s.items.map(i => i.target)]),
-    [['이름 규칙 위반', ['badname']], ['태그 지정 위반', ['badname']]]);
+  assert.deepEqual(JSON.parse(f.delivered[0]).items.map(i => [i.target, i.detail]),
+    [['badname', '이름 규칙 안 맞음'], ['badname', '태그 없음']]);
   f.devices([{ ...board, name: 'jetson-office-onano.example.ts.net', tags: ['tag:team-hardware'] }]);
   f.monitor.saveSettings({ ...f.monitor.state().settings, excludedDevices: [board.nodeId] });
   f.advance(); await f.monitor.poll();
@@ -238,8 +239,8 @@ test('alert lines say only what kind of mismatch it is, never the rule regex', a
   const f = setup(t);
   f.monitor.saveSettings({ ...f.monitor.state().settings, tagRules: [{ prefix: '^[a-z0-9]+-(?!office-)[a-z0-9]+-', tags: ['tag:field'] }] });
   await f.monitor.poll();
-  const items = JSON.parse(f.delivered.at(-1)).sections.flatMap(s => s.items);
-  assert.deepEqual(items.map(i => i.detail), ['태그 규칙 불일치']);
+  const items = JSON.parse(f.delivered.at(-1)).items;
+  assert.deepEqual(items.map(i => i.detail), ['태그 규칙 안 맞음']);
 });
 
 test('rule note is saved as plain text up to 2000 characters', t => {
@@ -290,7 +291,7 @@ test('backfilled tag changes chain old tags from the previous change, not from c
   f.logs([tagLog(2, ['tag:pig']), tagLog(1, ['tag:field'])]);
   f.advance(); await f.monitor.poll();
   const tagged = f.monitor.state().events.filter(e => e.kind === 'tagged').map(e => e.detail);
-  assert.deepEqual(tagged, ['tag:field → tag:pig', '(이전 미확인) → tag:field']);
+  assert.deepEqual(tagged, ['field → pig', 'field(으)로 지정']);
 });
 
 test('review fixes: change alerts survive a channel summary, and a lagged tag log keeps the old tags', async t => {
@@ -303,10 +304,32 @@ test('review fixes: change alerts survive a channel summary, and a lagged tag lo
   f.logs([{ eventTime: '2026-10-16T10:00:30Z', action: 'UPDATE', actor, target: { type: 'NODE', id: 'node-board', name: 'jetson-example-cough01.ts.net', property: 'ACL_TAGS' }, new: ['tag:office'] }]);
   f.monitor.notifiers.slack = async () => { throw new Error('down'); };
   f.advance(); await f.monitor.poll();
-  assert.equal(f.monitor.state().events.find(e => e.kind === 'tagged').detail, 'tag:pig → tag:office');
+  assert.equal(f.monitor.state().events.find(e => e.kind === 'tagged').detail, 'pig → office');
   const pendingTitles = () => f.monitor.db.prepare('SELECT text FROM outbox WHERE delivered_at IS NULL').all().map(r => JSON.parse(r.text).title);
   assert.ok(pendingTitles().some(title => title.includes('변경')));
   f.monitor.announceOpenFindings(['slack']);
   assert.ok(pendingTitles().some(title => title.includes('변경')), 'failed change alert is kept');
-  assert.ok(pendingTitles().some(title => title.includes('현재 열린 컨벤션 위반')));
+  assert.ok(pendingTitles().some(title => title.includes('현재 남은 규칙 위반')));
+});
+
+test('audit logs read in plain words; routine records are history-only and console logouts are dropped', () => {
+  const at = (action, target, extra = {}) => describeChange({ action, target, ...extra });
+  const node = (property, name = 'pi-office-kim.tail.ts.net') => ({ type: 'NODE', id: 'n1', name, property });
+  assert.equal(at('LOGOUT', { type: 'WEB_INTERFACE', name: 'login.tailscale.com' }), null);
+  assert.equal(at('LOGOUT', { type: 'ADMIN_CONSOLE' }), null);
+  assert.deepEqual(at('LOGOUT', node()), { kind: 'changed', label: '장비 로그아웃', target: 'pi-office-kim', detail: '', quiet: true });
+  assert.deepEqual(at('EXPIRED', node('KEY_EXPIRY_TIME')), { kind: 'changed', label: '접속 만료됨', target: 'pi-office-kim', detail: '다시 로그인해야 연결됨' });
+  assert.equal(at('UPDATE', node('KEY_EXPIRY_TIME'), { new: '2027-03-10T00:00:00Z' }).quiet, true);
+  assert.equal(at('DISABLE', node('KEY_EXPIRY')).label, '접속 만료 끔');
+  assert.deepEqual(at('UPDATE', node('MACHINE_NAME'), { old: 'a', new: 'b' }), { kind: 'renamed', label: '이름 변경', target: 'b', detail: '이전 이름 a' });
+  assert.equal(at('UPDATE', node('MACHINE_NAME'), { old: '', new: 'b' }).quiet, true);
+  assert.equal(at('UPDATE', node('ALLOWED_IPS'), { old: ['100.1.1.1/32'], new: ['100.1.1.1/32', '10.0.0.1/32', '10.0.0.2/32'] }).detail, '10.0.0.1/32 외 1개 추가');
+  assert.equal(at('UPDATE', node('AUTO_APPROVED_ROUTES'), { new: [] }).quiet, true);
+  assert.deepEqual(at('UPDATE', { type: 'USER', name: 'lee@x', property: 'USER_ROLE' }, { old: ['Member'], new: ['Admin', 'Member'] }).detail, '멤버 → 관리자');
+  assert.equal(at('ENABLE', { type: 'TAILNET', property: 'USER_APPROVAL_REQUIRED' }).detail, '켬');
+  assert.equal(at('ACCEPT', { type: 'INVITE', property: 'TAILNET_INVITE' }, { actor: { loginName: 'lee@x' } }).target, 'lee@x');
+  assert.equal(at('CREATE', { type: 'SHARE', name: '"clover-pi.tail.ts.net" to ""' }).target, 'clover-pi');
+  assert.equal(at('CREATE', { type: 'API_KEY', name: 'Auth key' }, { new: { description: 'auto-generated from Linux machine wizard' } }).quiet, true);
+  assert.equal(at('CREATE', { type: 'API_KEY', name: 'API key' }, { new: { description: 'ci' } }).label, 'API 키 발급');
+  assert.equal(at('PAUSE', { type: 'WIDGET' }).label, '기타 변경');
 });

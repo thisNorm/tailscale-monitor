@@ -17,11 +17,11 @@ function presence(d) {
 }
 const origins = { ADMIN_CONSOLE: '관리 콘솔', ADMIN_UI: '관리 콘솔', CONFIG_API: 'API', CONTROL: 'Tailscale 서비스', NODE: '장비에서 실행', POLL: '장비 수집 비교', IDENTITY_PROVIDER: '인증 제공자', SUPPORT_REQUEST: '지원 요청' };
 const eventKinds = { registered: '등록', deleted: '삭제', tagged: '태그 변경', renamed: '이름 변경', policy: '정책 변경', changed: '기타 변경' };
-const eventLabel = e => escapeHtml(e.kind === 'changed' ? e.label || eventKinds.changed : eventKinds[e.kind] || e.kind);
+const eventLabel = e => escapeHtml(e.label || eventKinds[e.kind] || e.kind);
 const pages = {
   devices: ['장비', '태그별로 장비를 확인하고 웹에서 표시 그룹을 정리합니다.'],
   history: ['변경 이력', '장비 등록·삭제, 태그·이름 변경, 정책 변경을 시간순으로 확인합니다.'],
-  settings: ['규칙 · 알림', '검사할 컨벤션과 알림을 받을 채널을 설정합니다.']
+  settings: ['규칙 · 알림', '검사할 규칙과 알림을 받을 채널을 설정합니다.']
 };
 const integrationGroups = [
   { id: 'tailscale', label: 'Tailscale', description: '장비와 변경 이력 수집', fields: [
@@ -116,7 +116,7 @@ function renderChrome() {
 function devicesView() {
   return `<div class="device-workbench"><section class="device-main" aria-label="장비 목록">
     <div class="device-toolbar"><div class="filters" aria-label="장비 필터">
-      ${[['all', '전체'], ['unregistered', '미등록'], ['violations', '컨벤션 위반'], ['removed', '목록에서 사라짐']].map(([value, label]) => `<button type="button" class="filter ${deviceFilter === value ? 'active' : ''}" data-device-filter="${value}" aria-pressed="${deviceFilter === value}">${label}<span class="filter-count" data-count="${value}">${deviceCount(value)}</span></button>`).join('')}
+      ${[['all', '전체'], ['unregistered', '미등록'], ['violations', '규칙 위반'], ['removed', '목록에서 사라짐']].map(([value, label]) => `<button type="button" class="filter ${deviceFilter === value ? 'active' : ''}" data-device-filter="${value}" aria-pressed="${deviceFilter === value}">${label}<span class="filter-count" data-count="${value}">${deviceCount(value)}</span></button>`).join('')}
     </div><label class="search"><span class="sr-only">장비 검색</span><input id="device-search" type="search" placeholder="장비명, Tailscale IP, 태그 검색" value="${escapeHtml(deviceSearch)}"></label></div>
     <div class="device-group-tools"><label class="tag-group-filter"><span>태그 그룹</span><select id="device-tag-filter" aria-label="태그 그룹">${deviceTagOptions()}</select></label><button type="button" data-group-create>+ 그룹 만들기</button></div>
     <div id="device-sections">${deviceGroups()}</div>
@@ -290,7 +290,7 @@ function toggle(name, label, description, extra = '') {
 
 function notificationControls() {
   return `<div id="notification-controls"><div class="notification-heading"><h3>알림 채널</h3></div>
-    ${toggle('notificationsEnabled', '전체 알림', '컨벤션 위반과 변경 알림 모두')}
+    ${toggle('notificationsEnabled', '전체 알림', '규칙 위반과 변경 알림 모두')}
     ${toggle('changeAlertsEnabled', '변경 알림', '장비 등록·삭제, 태그·이름, 정책 변경')}
     ${toggle('telegramEnabled', 'Telegram', '01 · 개인 테스트', `<div class="channel-status">${escapeHtml(channelStatus('telegram'))}</div>`)}
     ${toggle('slackEnabled', 'Slack', '02 · 팀 공용 운영', `<div class="channel-status">${escapeHtml(channelStatus('slack'))}</div>`)}</div>`;
@@ -343,7 +343,7 @@ function ruleNoteView(editing = false) {
 
 function settingsView(compact = false) {
   const settings = state.settings;
-  return `<div class="settings-layout${compact ? ' compact-settings' : ''}">${compact ? '' : '<div class="settings-column">'}<section class="panel rules-panel"><div class="panel-header"><div class="section-title">${compact ? '<span class="section-number">03</span>' : ''}<h2>${compact ? '규칙' : '컨벤션 규칙'}</h2></div></div><div class="panel-body">${ruleNoteView()}${compact ? '<details class="regex-rules"><summary>정규식 규칙 보기·수정</summary>' : ''}<form id="rules-form">
+  return `<div class="settings-layout${compact ? ' compact-settings' : ''}">${compact ? '' : '<div class="settings-column">'}<section class="panel rules-panel"><div class="panel-header"><div class="section-title">${compact ? '<span class="section-number">03</span>' : ''}<h2>${compact ? '규칙' : '이름·태그 규칙'}</h2></div></div><div class="panel-body">${ruleNoteView()}${compact ? '<details class="regex-rules"><summary>정규식 규칙 보기·수정</summary>' : ''}<form id="rules-form">
     <label class="field"><span class="field-title">이름 정규식</span><input name="namePattern" class="mono" aria-label="이름 정규식" value="${escapeHtml(settings.namePattern)}" maxlength="256" required>${!compact ? '<small>Tailscale 장비명을 검사합니다. 예: jetson-hadong-cough01, chonnam-uni-001, kisook-laptop</small>' : ''}</label>
     <label class="field"><span class="field-title">이름 규칙 → 필수 태그 <small>접두어 또는 ^정규식</small></span><textarea name="tagRules" rows="3" class="mono" aria-label="장비명별 태그 규칙" placeholder="^[a-z0-9]+-office- = tag:office">${escapeHtml(settings.tagRules.map(rule => `${rule.prefix} = ${rule.tags.join(', ')}`).join('\n'))}</textarea>${!compact ? '<small>예: ^[a-z0-9]+-office- = tag:office (장비-지역-닉네임의 지역이 office) · 정확히 이 태그만 허용합니다.</small>' : ''}</label>
     <label class="checkbox-label"><input type="checkbox" name="requireTags" ${settings.requireTags ? 'checked' : ''}> 태그가 없는 장비도 위반으로 알림</label>
