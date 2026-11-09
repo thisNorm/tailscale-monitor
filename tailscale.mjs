@@ -75,39 +75,43 @@ export class Tailscale {
 }
 
 const escapeMarkup = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-const kst = value => `${new Date(value).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).slice(0, 16)} KST`;
-const report = text => { try { const value = JSON.parse(text); return Array.isArray(value?.sections) ? value : null; } catch { return null; } };
-const total = section => section.items.length + section.more;
+const shortTime = value => new Date(value).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).slice(5, 16).replace('-', '/');
+// Reports queued by older versions use sections; they are flattened into the same one-line items.
+const report = text => {
+  try {
+    const value = JSON.parse(text);
+    if (Array.isArray(value?.items)) return { buttons: ['console', 'monitor'], more: 0, ...value };
+    if (Array.isArray(value?.sections)) return { title: value.title, time: value.time, buttons: ['console', 'monitor'],
+      items: value.sections.flatMap(s => s.items.map(i => ({ label: s.label, target: i.target, detail: i.detail }))), more: value.sections.reduce((n, s) => n + s.more, 0) };
+  } catch {}
+  return null;
+};
+// One line per item: • [label] target — detail · actor. Escaping blocks <!channel> injection from device names.
+const itemLines = (r, bold) => [...r.items.map(i => `• ${i.label ? `[${escapeMarkup(i.label)}] ` : ''}${bold(escapeMarkup(i.target))}${i.detail ? ` — ${escapeMarkup(i.detail)}` : ''}${i.actor ? `  · ${escapeMarkup(i.actor)}` : ''}`),
+  ...(r.more ? [`외 ${r.more}건 · 모니터링 화면에서 확인`] : [])];
 
-// Header, time/count context, then one section per violation kind (alerting-tool layout). Escaping blocks <!channel> injection from device names.
 // Telegram rejects inline-button URLs that point at a local address.
 const publicUrl = url => Boolean(url) && !/^https?:\/\/(localhost|127\.|\[::1\])/.test(url);
+const buttons = (r, links, telegram) => [
+  ...(r.buttons.includes('console') && links.console ? [{ text: 'Tailscale 콘솔', url: links.console }] : []),
+  ...(r.buttons.includes('monitor') && (telegram ? publicUrl(links.monitor) : links.monitor) ? [{ text: '모니터링 열기', url: links.monitor }] : [])];
 
 export function slackMessage(text, links = {}) {
   const r = report(text);
   if (!r) return { text: escapeMarkup(text), blocks: [{ type: 'section', text: { type: 'mrkdwn', text: escapeMarkup(text).slice(0, 2900) } }] };
+  const links_ = buttons(r, links, false);
   return { text: escapeMarkup(r.title), unfurl_links: false, unfurl_media: false, blocks: [
-    { type: 'header', text: { type: 'plain_text', text: r.title.slice(0, 150), emoji: false } },
-    { type: 'context', elements: [{ type: 'mrkdwn', text: escapeMarkup(`${kst(r.time)} · ${r.sections.map(s => `${s.label} ${total(s)}건`).join(' · ')}`) }] },
-    ...r.sections.flatMap(s => [{ type: 'divider' }, { type: 'section', text: { type: 'mrkdwn', text: [
-      `*${escapeMarkup(s.label)}* (${total(s)}건)`,
-      ...s.items.map(i => `• *${escapeMarkup(i.target)}*${i.address ? `   \`${escapeMarkup(i.address)}\`` : ''}\n      ${escapeMarkup(i.detail)}`),
-      ...(s.more ? [`_외 ${s.more}건은 모니터링 화면에서 확인_`] : [])].join('\n').slice(0, 2900) } }]),
-    ...(links.console ? [{ type: 'actions', elements: [
-      { type: 'button', text: { type: 'plain_text', text: 'Tailscale 콘솔' }, url: links.console },
-      ...(links.monitor ? [{ type: 'button', style: 'primary', text: { type: 'plain_text', text: '모니터링 열기' }, url: links.monitor }] : [])] }] : [])] };
+    { type: 'section', text: { type: 'mrkdwn', text: [`*${escapeMarkup(r.title)}*  ·  ${shortTime(r.time)}`, ...itemLines(r, t => `*${t}*`)].join('\n').slice(0, 2900) } },
+    ...(links_.length ? [{ type: 'actions', elements: links_.map((b, i) => ({ type: 'button', text: { type: 'plain_text', text: b.text }, url: b.url, ...(i === links_.length - 1 && b.text === '모니터링 열기' ? { style: 'primary' } : {}) })) }] : [])] };
 }
 
-// shortcut: no HTML-aware truncation; 10 items per section keeps reports far below Telegram's 4096-char limit.
+// shortcut: no HTML-aware truncation; 15 items per report keeps it far below Telegram's 4096-char limit.
 export function telegramMessage(text, links = {}) {
   const r = report(text);
   if (!r) return { text: text.slice(0, 4000) };
-  return { parse_mode: 'HTML', text: [`<b>${escapeMarkup(r.title)}</b>`, kst(r.time), ...r.sections.flatMap(s => ['',
-    `<b>${escapeMarkup(s.label)}</b> (${total(s)}건)`,
-    ...s.items.map(i => `• <b>${escapeMarkup(i.target)}</b>${i.address ? `  <code>${escapeMarkup(i.address)}</code>` : ''}\n    ${escapeMarkup(i.detail)}`),
-    ...(s.more ? [`<i>외 ${s.more}건은 모니터링 화면에서 확인</i>`] : [])])].join('\n'),
-    ...(links.console ? { reply_markup: { inline_keyboard: [[{ text: 'Tailscale 콘솔', url: links.console },
-      ...(publicUrl(links.monitor) ? [{ text: '모니터링 열기', url: links.monitor }] : [])]] } } : {}) };
+  const links_ = buttons(r, links, true);
+  return { parse_mode: 'HTML', text: [`<b>${escapeMarkup(r.title)}</b>  ·  ${shortTime(r.time)}`, ...itemLines(r, t => `<b>${t}</b>`)].join('\n'),
+    ...(links_.length ? { reply_markup: { inline_keyboard: [links_] } } : {}) };
 }
 
 export function slackSender(url, links) {
