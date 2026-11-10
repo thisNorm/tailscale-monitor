@@ -55,8 +55,12 @@ export function describeChange(log, before) {
       const newTags = sorted(Array.isArray(log.new) ? log.new : []), oldTags = before?.tags ?? null;
       return { ...change('tagged', '태그 변경', name, tagChangeText(oldTags, newTags)), oldTags, newTags };
     }
-    if (property === 'MACHINE_NAME') return log.old ? change('renamed', '이름 변경', log.new || name, log.new ? `이전 이름 ${log.old}` : '기본 이름으로 되돌림')
-      : change('renamed', '이름 지정', log.new || name, '', true);
+    if (property === 'MACHINE_NAME') {
+      if (!log.old) return change('renamed', '이름 지정', log.new || name, '', true);
+      if (log.new) return change('renamed', '이름 변경', log.new, `이전 이름 ${log.old}`);
+      // The device itself can log an empty new name while its name stays the same; nothing actually changed.
+      return name === log.old ? change('renamed', '이름 변경 기록', name, '장비가 보낸 기록 · 실제 이름은 그대로', true) : change('renamed', '이름 변경', name, `이전 이름 ${log.old}`);
+    }
     if (property === 'KEY_EXPIRY_TIME') return action === 'EXPIRED' ? change('changed', '접속 만료됨', name, '다시 로그인해야 연결됨')
       : change('changed', '접속 만료일', name, !log.new || String(log.new).startsWith('0001-') ? '만료 없음' : `${String(log.new).slice(0, 10)}까지`, true);
     if (property === 'KEY_EXPIRY' && ['ENABLE', 'DISABLE'].includes(action)) return action === 'DISABLE'
@@ -137,8 +141,8 @@ export class Monitor {
       this.db.prepare("DELETE FROM events WHERE source='devices' OR json_extract(body, '$.kind')='tagged'").run();
       this.setMeta('auditCursor', null);
     }
-    // Schema 4: stored history is relabelled in plain words; console/web logouts are dropped.
-    if (this.meta('historySchema') !== 4) {
+    // Schema 4/5: stored history is relabelled in plain words (5-6: empty name reports from the device); console/web logouts are dropped.
+    if (this.meta('historySchema') !== 6) {
       for (const row of this.db.prepare("SELECT id, body FROM events WHERE source='tailscale'").all()) {
         const body = parse(row.body);
         if (!body.raw?.action) continue;
@@ -146,7 +150,7 @@ export class Monitor {
         if (!change) this.db.prepare('DELETE FROM events WHERE id=?').run(row.id);
         else this.db.prepare('UPDATE events SET body=? WHERE id=?').run(JSON.stringify({ ...body, ...change, quiet: change.quiet }), row.id);
       }
-      this.setMeta('historySchema', 4);
+      this.setMeta('historySchema', 6);
     }
   }
 

@@ -323,6 +323,8 @@ test('audit logs read in plain words; routine records are history-only and conso
   assert.equal(at('DISABLE', node('KEY_EXPIRY')).label, '접속 만료 끔');
   assert.deepEqual(at('UPDATE', node('MACHINE_NAME'), { old: 'a', new: 'b' }), { kind: 'renamed', label: '이름 변경', target: 'b', detail: '이전 이름 a' });
   assert.equal(at('UPDATE', node('MACHINE_NAME'), { old: '', new: 'b' }).quiet, true);
+  assert.equal(at('UPDATE', node('MACHINE_NAME'), { old: 'pi-office-kim', new: '' }).quiet, true, 'reconnect with the same name is not alerted');
+  assert.deepEqual(at('UPDATE', node('MACHINE_NAME'), { old: 'custom', new: '' }), { kind: 'renamed', label: '이름 변경', target: 'pi-office-kim', detail: '이전 이름 custom' });
   assert.equal(at('UPDATE', node('ALLOWED_IPS'), { old: ['100.1.1.1/32'], new: ['100.1.1.1/32', '10.0.0.1/32', '10.0.0.2/32'] }).detail, '10.0.0.1/32 외 1개 추가');
   assert.equal(at('UPDATE', node('AUTO_APPROVED_ROUTES'), { new: [] }).quiet, true);
   assert.deepEqual(at('UPDATE', { type: 'USER', name: 'lee@x', property: 'USER_ROLE' }, { old: ['Member'], new: ['Admin', 'Member'] }).detail, '멤버 → 관리자');
