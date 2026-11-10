@@ -312,26 +312,31 @@ test('review fixes: change alerts survive a channel summary, and a lagged tag lo
   assert.ok(pendingTitles().some(title => title.includes('현재 남은 규칙 위반')));
 });
 
-test('audit logs read in plain words; routine records are history-only and console logouts are dropped', () => {
+test('only listed management changes alert; routine records are history-only and automatic ones are dropped', () => {
   const at = (action, target, extra = {}) => describeChange({ action, target, ...extra });
   const node = (property, name = 'pi-office-kim.tail.ts.net') => ({ type: 'NODE', id: 'n1', name, property });
   assert.equal(at('LOGOUT', { type: 'WEB_INTERFACE', name: 'login.tailscale.com' }), null);
   assert.equal(at('LOGOUT', { type: 'ADMIN_CONSOLE' }), null);
   assert.deepEqual(at('LOGOUT', node()), { kind: 'changed', label: '장비 로그아웃', target: 'pi-office-kim', detail: '', quiet: true });
   assert.deepEqual(at('EXPIRED', node('KEY_EXPIRY_TIME')), { kind: 'changed', label: '접속 만료됨', target: 'pi-office-kim', detail: '다시 로그인해야 연결됨' });
-  assert.equal(at('UPDATE', node('KEY_EXPIRY_TIME'), { new: '2027-03-10T00:00:00Z' }).quiet, true);
-  assert.equal(at('DISABLE', node('KEY_EXPIRY')).label, '접속 만료 끔');
+  assert.equal(at('UPDATE', node('KEY_EXPIRY_TIME'), { new: '2027-03-10T00:00:00Z' }), null, 'expiry moves on every re-login');
+  assert.equal(at('DISABLE', node('KEY_EXPIRY')).quiet, true);
   assert.deepEqual(at('UPDATE', node('MACHINE_NAME'), { old: 'a', new: 'b' }), { kind: 'renamed', label: '이름 변경', target: 'b', detail: '이전 이름 a' });
-  assert.equal(at('UPDATE', node('MACHINE_NAME'), { old: '', new: 'b' }).quiet, true);
-  assert.equal(at('UPDATE', node('MACHINE_NAME'), { old: 'pi-office-kim', new: '' }).quiet, true, 'reconnect with the same name is not alerted');
+  assert.equal(at('UPDATE', node('MACHINE_NAME'), { old: '', new: 'b' }), null, 'first name while registering');
+  assert.equal(at('UPDATE', node('MACHINE_NAME'), { old: 'pi-office-kim', new: '' }), null, 'device re-reporting the same name');
   assert.deepEqual(at('UPDATE', node('MACHINE_NAME'), { old: 'custom', new: '' }), { kind: 'renamed', label: '이름 변경', target: 'pi-office-kim', detail: '이전 이름 custom' });
   assert.equal(at('UPDATE', node('ALLOWED_IPS'), { old: ['100.1.1.1/32'], new: ['100.1.1.1/32', '10.0.0.1/32', '10.0.0.2/32'] }).detail, '10.0.0.1/32 외 1개 추가');
-  assert.equal(at('UPDATE', node('AUTO_APPROVED_ROUTES'), { new: [] }).quiet, true);
+  assert.equal(at('UPDATE', node('AUTO_APPROVED_ROUTES'), { new: [] }), null);
   assert.deepEqual(at('UPDATE', { type: 'USER', name: 'lee@x', property: 'USER_ROLE' }, { old: ['Member'], new: ['Admin', 'Member'] }).detail, '멤버 → 관리자');
-  assert.equal(at('ENABLE', { type: 'TAILNET', property: 'USER_APPROVAL_REQUIRED' }).detail, '켬');
+  assert.equal(at('ENABLE', { type: 'TAILNET', property: 'USER_APPROVAL_REQUIRED' }).quiet, true);
+  assert.equal(at('UPDATE', { type: 'TAILNET', property: 'DNS_CONFIG' }).quiet, undefined, 'DNS changes alert');
+  assert.equal(at('APPROVE', { type: 'USER', name: 'lee@x' }).quiet, true);
+  assert.equal(at('DELETE', { type: 'INVITE', property: 'TAILNET_INVITE' }).quiet, undefined, 'invite cancel alerts');
   assert.equal(at('ACCEPT', { type: 'INVITE', property: 'TAILNET_INVITE' }, { actor: { loginName: 'lee@x' } }).target, 'lee@x');
   assert.equal(at('CREATE', { type: 'SHARE', name: '"clover-pi.tail.ts.net" to ""' }).target, 'clover-pi');
-  assert.equal(at('CREATE', { type: 'API_KEY', name: 'Auth key' }, { new: { description: 'auto-generated from Linux machine wizard' } }).quiet, true);
-  assert.equal(at('CREATE', { type: 'API_KEY', name: 'API key' }, { new: { description: 'ci' } }).label, 'API 키 발급');
-  assert.equal(at('PAUSE', { type: 'WIDGET' }).label, '기타 변경');
+  assert.equal(at('CREATE', { type: 'API_KEY', name: 'Auth key' }, { new: { description: 'auto-generated from Linux machine wizard' } }), null);
+  assert.equal(at('EXPIRED', { type: 'API_KEY', name: 'API key' }), null);
+  assert.equal(at('ACCEPT', { type: 'INVITE', property: 'NODE_SHARE' }), null);
+  assert.deepEqual(at('CREATE', { type: 'API_KEY', name: 'API key' }, { new: { description: 'ci' } }), { kind: 'changed', label: 'API 키 발급', target: 'ci', detail: '', quiet: true });
+  assert.deepEqual(at('PAUSE', { type: 'WIDGET' }), { kind: 'changed', label: '기타 변경', target: '', detail: 'WIDGET PAUSE', quiet: true }, 'unknown kinds never alert');
 });

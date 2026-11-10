@@ -40,66 +40,68 @@ const listText = items => items.length > 1 ? `${items[0]} 외 ${items.length - 1
 export const tagChangeText = (oldTags, newTags) => !newTags.length ? '태그 지움'
   : oldTags ? `${tagText(oldTags) || '없음'} → ${tagText(newTags)}` : `${tagText(newTags)}(으)로 지정`;
 
-// Turns one configuration audit log entry into a history/alert record in plain words, or null for non-changes (logins, our own OAuth tokens).
-// quiet: kept in history only — routine or duplicate records nobody needs pinged about.
+// Turns one configuration audit log entry into a history record in plain words, or null when nobody needs to see it.
+// Only changes listed with alert() are sent to Slack/Telegram; everything else, including unknown kinds, stays in history (quiet).
 export function describeChange(log, before) {
   const target = log.target || {}, property = target.property || '', action = log.action, type = target.type;
-  if (['LOGIN', 'LOGOUT'].includes(action) && type !== 'NODE' || type === 'OAUTH_ACCESS_TOKEN') return null;
   const name = type === 'NODE' ? String(target.name || target.id || '').split('.')[0] : target.name || target.id || '';
-  const change = (kind, label, item, detail = '', quiet = false) => ({ kind, label, target: item, detail, ...(quiet ? { quiet } : {}) });
+  const alert = (kind, label, item, detail = '') => ({ kind, label, target: item, detail });
+  const keep = (label, item, detail = '') => ({ kind: 'changed', label, target: item, detail, quiet: true });
+  // Logins/logouts of people, our own API tokens, and records Tailscale writes by itself while adding or re-connecting a device.
+  if (['LOGIN', 'LOGOUT'].includes(action) && type !== 'NODE' || type === 'OAUTH_ACCESS_TOKEN') return null;
   if (type === 'NODE') {
-    if (action === 'CREATE') return change('registered', '장비 등록', name);
-    if (action === 'DELETE') return change('deleted', '장비 삭제', name);
-    if (action === 'LOGOUT') return change('changed', '장비 로그아웃', name, '', true);
+    if (action === 'CREATE') return alert('registered', '장비 등록', name);
+    if (action === 'DELETE') return alert('deleted', '장비 삭제', name);
+    if (action === 'LOGOUT') return keep('장비 로그아웃', name);
     if (property === 'ACL_TAGS') {
       const newTags = sorted(Array.isArray(log.new) ? log.new : []), oldTags = before?.tags ?? null;
-      return { ...change('tagged', '태그 변경', name, tagChangeText(oldTags, newTags)), oldTags, newTags };
+      return { ...alert('tagged', '태그 변경', name, tagChangeText(oldTags, newTags)), oldTags, newTags };
     }
     if (property === 'MACHINE_NAME') {
-      if (!log.old) return change('renamed', '이름 지정', log.new || name, '', true);
-      if (log.new) return change('renamed', '이름 변경', log.new, `이전 이름 ${log.old}`);
-      // The device itself can log an empty new name while its name stays the same; nothing actually changed.
-      return name === log.old ? change('renamed', '이름 변경 기록', name, '장비가 보낸 기록 · 실제 이름은 그대로', true) : change('renamed', '이름 변경', name, `이전 이름 ${log.old}`);
+      // No old name: the first name set while registering. Empty new name with the name unchanged: the device re-reporting itself.
+      if (!log.old || !log.new && name === log.old) return null;
+      return alert('renamed', '이름 변경', log.new || name, `이전 이름 ${log.old}`);
     }
-    if (property === 'KEY_EXPIRY_TIME') return action === 'EXPIRED' ? change('changed', '접속 만료됨', name, '다시 로그인해야 연결됨')
-      : change('changed', '접속 만료일', name, !log.new || String(log.new).startsWith('0001-') ? '만료 없음' : `${String(log.new).slice(0, 10)}까지`, true);
+    // Expiry dates move on every re-login; only an actual expiry matters.
+    if (property === 'KEY_EXPIRY_TIME') return action === 'EXPIRED' ? alert('changed', '접속 만료됨', name, '다시 로그인해야 연결됨') : null;
     if (property === 'KEY_EXPIRY' && ['ENABLE', 'DISABLE'].includes(action)) return action === 'DISABLE'
-      ? change('changed', '접속 만료 끔', name, '재로그인 없이 계속 접속') : change('changed', '접속 만료 켬', name, '주기적으로 재로그인 필요');
+      ? keep('접속 만료 끔', name, '재로그인 없이 계속 접속') : keep('접속 만료 켬', name, '주기적으로 재로그인 필요');
     if (property === 'ALLOWED_IPS' || property === 'AUTO_APPROVED_ROUTES') {
       const [oldNets, newNets] = [subnets(log.old), subnets(log.new)];
       const added = newNets.filter(ip => !oldNets.includes(ip)), removed = oldNets.filter(ip => !newNets.includes(ip));
       const detail = [added.length && `${listText(added)} 추가`, removed.length && `${listText(removed)} 제거`].filter(Boolean).join(', ');
-      return change('changed', '내부망 연결', name, detail, !detail);
+      return detail ? alert('changed', '내부망 연결', name, detail) : null;
     }
   }
   if (type === 'TAILNET' && property === 'ACL') {
     const [oldLines, newLines] = [lines(log.old), lines(log.new)];
     const add = [...newLines].filter(line => !oldLines.has(line)).length, remove = [...oldLines].filter(line => !newLines.has(line)).length;
-    return change('policy', '정책 변경', '접근 정책', [add && `${add}줄 추가`, remove && `${remove}줄 삭제`].filter(Boolean).join(', ') || '내용 정리');
+    return alert('policy', '정책 변경', '접근 정책', [add && `${add}줄 추가`, remove && `${remove}줄 삭제`].filter(Boolean).join(', ') || '내용 정리');
   }
-  if (type === 'TAILNET' && property === 'DNS_CONFIG') return change('changed', '설정 변경', 'DNS 서버');
-  if (type === 'TAILNET' && property === 'USER_APPROVAL_REQUIRED') return change('changed', '설정 변경', '새 사용자 승인 필수', action === 'ENABLE' ? '켬' : '끔');
+  if (type === 'TAILNET' && property === 'DNS_CONFIG') return alert('changed', '설정 변경', 'DNS 서버');
+  if (type === 'TAILNET' && property === 'USER_APPROVAL_REQUIRED') return keep('설정 변경', '새 사용자 승인 필수', action === 'ENABLE' ? '켬' : '끔');
   if (type === 'USER') {
-    if (property === 'USER_ROLE') return change('changed', '사용자 권한', name, `${roleText(log.old)} → ${roleText(log.new)}`);
-    const label = { CREATE: '사용자 추가', APPROVE: '사용자 승인', DELETE: '사용자 삭제', SUSPEND: '사용자 정지', RESTORE: '사용자 복구' }[action];
-    if (label) return change('changed', label, name);
+    if (property === 'USER_ROLE') return alert('changed', '사용자 권한', name, `${roleText(log.old)} → ${roleText(log.new)}`);
+    if (action === 'APPROVE') return keep('사용자 승인', name);
+    const label = { CREATE: '사용자 추가', DELETE: '사용자 삭제', SUSPEND: '사용자 정지', RESTORE: '사용자 복구' }[action];
+    if (label) return alert('changed', label, name);
   }
   if (type === 'INVITE' && property === 'TAILNET_INVITE') {
     const label = { CREATE: '사용자 초대', ACCEPT: '초대 수락', DELETE: '초대 취소' }[action];
-    if (label) return change('changed', label, action === 'ACCEPT' && log.actor?.loginName || '초대 링크');
+    if (label) return alert('changed', label, action === 'ACCEPT' && log.actor?.loginName || '초대 링크');
   }
   if (type === 'INVITE' && property === 'NODE_SHARE') {
-    if (action === 'CREATE') return change('changed', '장비 공유', '공유 링크 생성');
-    if (action === 'ACCEPT') return change('changed', '장비 공유', '공유 링크 수락', '', true);
+    if (action === 'CREATE') return alert('changed', '장비 공유', '공유 링크 생성');
+    if (action === 'ACCEPT') return null; // the SHARE record right after says which device was shared
   }
-  if (type === 'SHARE' && action === 'CREATE') return change('changed', '장비 공유', String(target.name || '').match(/"([^".]+)/)?.[1] || '장비', '다른 계정에 공유됨');
+  if (type === 'SHARE' && action === 'CREATE') return alert('changed', '장비 공유', String(target.name || '').match(/"([^".]+)/)?.[1] || '장비', '다른 계정에 공유됨');
   if (type === 'API_KEY') {
-    // One-off auth keys are created and consumed automatically while adding a device.
-    const auto = target.name === 'Auth key' && (action !== 'CREATE' || /auto-generated/.test(log.new?.description || ''));
-    const label = { CREATE: '키 발급', REVOKE: '키 폐기', EXPIRED: '키 만료' }[action];
-    if (label) return change('changed', `${target.name === 'Auth key' ? '등록용 ' : 'API '}${label}`, log.new?.description || target.name || '', '', auto || action === 'EXPIRED');
+    // One-off auth keys are created and used up automatically while adding a device; expiry of any key is routine.
+    if (target.name === 'Auth key' && (action !== 'CREATE' || /auto-generated/.test(log.new?.description || '')) || action === 'EXPIRED') return null;
+    const label = { CREATE: '키 발급', REVOKE: '키 폐기' }[action];
+    if (label) return keep(`${target.name === 'Auth key' ? '등록용 ' : 'API '}${label}`, log.new?.description || target.name || '');
   }
-  return change('changed', '기타 변경', name, [type, action, property].filter(Boolean).join(' '));
+  return keep('기타 변경', name, [type, action, property].filter(Boolean).join(' '));
 }
 
 export function validateSettings(value) {
@@ -141,8 +143,8 @@ export class Monitor {
       this.db.prepare("DELETE FROM events WHERE source='devices' OR json_extract(body, '$.kind')='tagged'").run();
       this.setMeta('auditCursor', null);
     }
-    // Schema 4/5: stored history is relabelled in plain words (5-6: empty name reports from the device); console/web logouts are dropped.
-    if (this.meta('historySchema') !== 6) {
+    // Schema 4/5: stored history is relabelled in plain words (7: only management-relevant records kept); console/web logouts are dropped.
+    if (this.meta('historySchema') !== 7) {
       for (const row of this.db.prepare("SELECT id, body FROM events WHERE source='tailscale'").all()) {
         const body = parse(row.body);
         if (!body.raw?.action) continue;
@@ -150,7 +152,7 @@ export class Monitor {
         if (!change) this.db.prepare('DELETE FROM events WHERE id=?').run(row.id);
         else this.db.prepare('UPDATE events SET body=? WHERE id=?').run(JSON.stringify({ ...body, ...change, quiet: change.quiet }), row.id);
       }
-      this.setMeta('historySchema', 6);
+      this.setMeta('historySchema', 7);
     }
   }
 
