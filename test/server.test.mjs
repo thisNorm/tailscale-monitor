@@ -31,14 +31,18 @@ test('local HTTP serves the dashboard, prevents cross-origin writes and rejects 
   assert.equal((await fetch(`${url}/.env`)).status, 404);
 });
 
-test('configured password protects both the dashboard and API', async t => {
+test('configured password leaves the dashboard readable but protects every change', async t => {
   const password = fake();
   const app = await startServer({ env: { MONITOR_PORT: '0', MONITOR_PASSWORD: password }, dbPath: ':memory:' });
   t.after(() => app.close());
   const url = `http://127.0.0.1:${app.server.address().port}`;
-  assert.equal((await fetch(url)).status, 401);
-  assert.equal((await fetch(`${url}/api/state`)).status, 401);
+  assert.equal((await fetch(url)).status, 200);
+  assert.equal((await (await fetch(`${url}/api/state`)).json()).canEdit, false);
+  const json = { 'Content-Type': 'application/json', 'X-Monitor-Request': '1' };
+  for (const path of ['/api/settings', '/api/groups', '/api/notes', '/api/integrations', '/api/integrations/reveal', '/api/update', '/api/poll']) {
+    assert.equal((await fetch(`${url}${path}`, { method: 'POST', headers: json, body: '{}' })).status, 401, path);
+  }
   const headers = { Authorization: `Basic ${Buffer.from(`admin:${password}`).toString('base64')}` };
-  assert.equal((await fetch(`${url}/api/state`, { headers })).status, 200);
+  assert.equal((await (await fetch(`${url}/api/state`, { headers })).json()).canEdit, true);
   await assert.rejects(startServer({ env: { MONITOR_BIND: '0.0.0.0', MONITOR_PORT: '0' }, dbPath: ':memory:' }), /MONITOR_PASSWORD/);
 });
