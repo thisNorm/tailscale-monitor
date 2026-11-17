@@ -163,11 +163,7 @@ td small .mono { font-size: inherit; }
 .check-clear { display: inline-flex; align-items: center; gap: 7px; color: light-dark(var(--l-green), #a4d3ba); font-size: 13px; }
 .check-clear:before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: light-dark(var(--l-green-solid), #76b795); }
 .result-detail { margin-top: 5px; color: light-dark(var(--l-text-3), #9daabd); font-size: 12px; }
-.missing-label { color: light-dark(var(--l-amber), #d7bd86); font-size: 13px; margin-bottom: 5px; }
 .excluded-label { display: inline-block; color: light-dark(var(--l-text-2), #b9c6d8); border: 1px dashed light-dark(var(--l-border-strong), #55627a); border-radius: 3px; padding: 1px 6px; font-size: 13px; margin-bottom: 5px; }
-.row-missing { background: light-dark(var(--l-amber-bg), #25251f); }
-.row-missing .violation { color: light-dark(var(--l-amber), #bcb59e); }
-.row-missing .tag { color: light-dark(var(--l-text-2), #aeb4bf); }
 .table-note { display: flex; justify-content: space-between; gap: 15px; padding: 12px 1px 0; color: light-dark(var(--l-text-3), #9daabd); font-size: 12px; }
 .empty { padding: 35px 20px; text-align: center; color: light-dark(var(--l-text-2), #a3afc0); font-size: 14px; }
 .panel-body { padding: 19px; }

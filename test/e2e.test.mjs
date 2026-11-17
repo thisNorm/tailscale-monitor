@@ -42,7 +42,7 @@ async function setup(t) {
   };
   const reports = channel => sent[channel].map(text => JSON.parse(text));
   const open = s => s.findings.filter(f => !f.resolvedAt).map(f => `${f.target}:${f.code}`).sort();
-  return { tailnet, sent, base, auth, state, post, poll, reports, open };
+  return { tailnet, sent, base, auth, state, post, poll, reports, open, monitor: app.monitor };
 }
 
 test('UC0 access: login, host check and same-site write guard', async t => {
@@ -116,13 +116,17 @@ test('UC4 marking an office device as an exception removes it from checks and al
   assert.ok(e.open(await e.state()).some(x => x.startsWith('jetson-office-onano')));
 });
 
-test('UC5 a device deleted in Tailscale is kept as "gone" and the deletion is logged', async t => {
+test('UC5 a device deleted in Tailscale leaves the list, its exclusion and group; the deletion is logged', async t => {
   const e = await setup(t);
-  await e.poll();
+  let s = await e.poll();
+  const id = s.devices.find(d => d.hostname === 'ubuntu').id;
+  e.monitor.saveSettings({ ...s.settings, excludedDevices: [id] });
+  e.monitor.saveViewGroups({ groups: [{ id: 'g1', name: '현장' }], members: { [id]: 'g1' } });
   e.tailnet.devices = e.tailnet.devices.filter(d => d.hostname !== 'ubuntu');
   e.tailnet.logs.push(log('DELETE', 'ubuntu', 1));
-  const s = await e.poll();
-  assert.equal(s.devices.find(d => d.hostname === 'ubuntu').present, false);
+  s = await e.poll();
+  assert.ok(!s.devices.some(d => d.hostname === 'ubuntu'));
+  assert.deepEqual([s.settings.excludedDevices, s.viewGroups.members], [[], {}]);
   assert.ok(s.events.some(x => x.kind === 'deleted' && x.target === 'ubuntu'));
   assert.ok(!e.open(s).some(x => x.startsWith('ubuntu')), 'gone devices are not violations');
 });
