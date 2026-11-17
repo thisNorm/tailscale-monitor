@@ -284,6 +284,8 @@ export class Monitor {
     for (const id of ids) this.db.prepare('DELETE FROM devices WHERE id=?').run(id);
     const settings = this.meta('settings'), groups = this.meta('viewGroups');
     if (settings.excludedDevices.some(id => ids.includes(id))) this.setMeta('settings', { ...settings, excludedDevices: settings.excludedDevices.filter(id => !ids.includes(id)) });
+    const notes = this.meta('deviceNotes');
+    if (notes && ids.some(id => id in notes)) this.setMeta('deviceNotes', Object.fromEntries(Object.entries(notes).filter(([id]) => !ids.includes(id))));
     if (groups && ids.some(id => id in groups.members)) this.setMeta('viewGroups', { ...groups, members: Object.fromEntries(Object.entries(groups.members).filter(([id]) => !ids.includes(id))) });
   }
 
@@ -380,6 +382,16 @@ export class Monitor {
     });
   }
 
+  // Alias and memo shown on the IP list page only; the Tailscale device name is never changed.
+  saveDeviceNote(value) {
+    const { id, name = '', memo = '' } = value || {};
+    if (typeof id !== 'string' || !this.db.prepare('SELECT 1 FROM devices WHERE id=?').get(id)) throw new Error('장비를 찾을 수 없습니다.');
+    if (typeof name !== 'string' || name.trim().length > 60 || typeof memo !== 'string' || memo.trim().length > 200) throw new Error('이름은 60자, 메모는 200자 이내로 입력하세요.');
+    const notes = { ...this.meta('deviceNotes') };
+    if (name.trim() || memo.trim()) notes[id] = { name: name.trim(), memo: memo.trim() }; else delete notes[id];
+    this.setMeta('deviceNotes', notes);
+  }
+
   // View-only device groups shared by everyone on this server; they never touch Tailscale tags or rule checks.
   // shortcut: whole-object last-write-wins, fine for a few admins; upgrade to per-change ops if edits start colliding.
   saveViewGroups(value) {
@@ -410,7 +422,7 @@ export class Monitor {
       pending: this.db.prepare('SELECT count(*) AS n FROM outbox WHERE channel=? AND delivered_at IS NULL').get(channel).n
     }]));
     return { configured: this.source.configured, busy: this.busy, lastPoll: this.meta('lastPoll'), auditGap: this.meta('auditGap'),
-      settings: this.meta('settings'), viewGroups: this.meta('viewGroups') || { groups: [], members: {} }, collectors: Object.fromEntries(['devices', 'logs'].map(key => [key, this.meta(`collector:${key}`) || {}])),
+      settings: this.meta('settings'), viewGroups: this.meta('viewGroups') || { groups: [], members: {} }, deviceNotes: this.meta('deviceNotes') || {}, collectors: Object.fromEntries(['devices', 'logs'].map(key => [key, this.meta(`collector:${key}`) || {}])),
       devices, findings, // Full before/after values (a whole policy file per ACL change) stay in the DB; the page only needs the summary.
       events: this.db.prepare("SELECT body FROM events WHERE source IN ('tailscale', 'devices') ORDER BY time DESC, rowid DESC LIMIT 500").all().map(row => {
         const { old: _old, new: _new, raw, ...event } = parse(row.body);

@@ -19,6 +19,7 @@ const origins = { ADMIN_CONSOLE: '관리 콘솔', ADMIN_UI: '관리 콘솔', CON
 const eventKinds = { registered: '등록', deleted: '삭제', tagged: '태그 변경', renamed: '이름 변경', policy: '정책 변경', changed: '기타 변경' };
 const eventLabel = e => escapeHtml(e.label || eventKinds[e.kind] || e.kind);
 const pages = {
+  ips: ['IP 목록', '장비를 누르면 IP가 복사됩니다.'],
   devices: ['장비', '태그별로 장비를 확인하고 웹에서 표시 그룹을 정리합니다.'],
   history: ['변경 이력', '장비 등록·삭제, 태그·이름 변경, 정책 변경을 시간순으로 확인합니다.'],
   settings: ['규칙 · 알림', '검사할 규칙과 알림을 받을 채널을 설정합니다.']
@@ -53,7 +54,8 @@ let collapsedGroups = readCollapsedGroups();
 let deviceGroupOrder = readDeviceGroupOrder();
 let deviceTagFilter = '*';
 let state;
-let page = 'devices';
+let page = 'ips';
+let editingNote = null;
 let deviceFilter = 'all';
 let historyFilter = 'all';
 let deviceSearch = '';
@@ -353,17 +355,58 @@ function settingsView(compact = false) {
     ${integrationsView()}` : ''}</div>`;
 }
 
+// Tag order on the IP list: office, field, any other tag, then untagged devices.
+function ipGroups() {
+  const groups = new Map([['tag:office', []], ['tag:field', []]]);
+  for (const d of state.devices) {
+    const key = d.tags.find(tag => groups.has(tag)) || d.tags[0] || '';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(d);
+  }
+  const untagged = groups.get('') || [];
+  groups.delete('');
+  return [...groups, ...(untagged.length ? [['', untagged]] : [])].filter(([, list]) => list.length)
+    .map(([tag, list]) => [tag, list.sort((a, b) => a.displayName.localeCompare(b.displayName))]);
+}
+
+function ipRow(d) {
+  const note = state.deviceNotes?.[d.id] || {}, ip = d.addresses.find(a => !a.includes(':')) || d.addresses[0] || '';
+  if (editingNote === d.id) return `<form class="ip-edit" data-ipnote-form="${escapeHtml(d.id)}">
+    <input name="name" maxlength="60" value="${escapeHtml(note.name || '')}" placeholder="${escapeHtml(d.displayName)}" aria-label="표시 이름">
+    <input name="memo" maxlength="200" value="${escapeHtml(note.memo || '')}" placeholder="메모" aria-label="메모">
+    <button type="button" data-ipnote-cancel>취소</button><button type="submit" class="primary">저장</button></form>`;
+  return `<div class="ip-row"><button type="button" class="ip-copy" data-copy="${escapeHtml(ip)}" title="${escapeHtml(d.displayName)} · 눌러서 IP 복사">
+    <span class="ip-name">${escapeHtml(note.name || d.displayName)}</span><span class="ip-addr">${escapeHtml(ip)}</span><span class="ip-memo">${escapeHtml(note.memo || '')}</span></button>
+    <button type="button" class="ip-edit-button" data-ipnote-edit="${escapeHtml(d.id)}" aria-label="${escapeHtml(d.displayName)} 이름·메모 수정">수정</button></div>`;
+}
+
+function ipsView() {
+  if (!state.devices.length) return '<p class="empty">아직 불러온 장비가 없습니다.</p>';
+  return `<div class="ip-list">${ipGroups().map(([tag, list]) => `<section class="ip-group"><h2>${escapeHtml(tag ? tag.replace(/^tag:/, '') : '태그 없음')}<span>${list.length}대</span></h2>
+    <div class="ip-grid">${list.map(ipRow).join('')}</div></section>`).join('')}</div>`;
+}
+
+// Read mode: hide server-changing controls and lock settings forms; the server rejects such requests anyway.
+function applyMode() {
+  document.body.classList.toggle('readonly', !state.canEdit);
+  const auth = $('#auth-button');
+  auth.hidden = !state.authEnabled;
+  auth.textContent = state.canEdit ? '로그아웃' : '로그인';
+  if (!state.canEdit) document.querySelectorAll('#content :is(form input, form textarea, form select, input[data-notification])').forEach(el => { el.disabled = true; });
+}
+
 function renderPage() {
-  page = Object.hasOwn(pages, location.hash.slice(1)) ? location.hash.slice(1) : 'devices';
+  page = Object.hasOwn(pages, location.hash.slice(1)) ? location.hash.slice(1) : 'ips';
   const [title, description] = pages[page];
   $('#page-title').textContent = title;
   $('#page-description').textContent = description;
-  $('.page-heading').classList.toggle('sr-only', page === 'devices');
+  $('.page-heading').classList.toggle('sr-only', page === 'devices' || page === 'ips');
   document.querySelectorAll('[data-page]').forEach(link => {
     if (link.dataset.page === page) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   });
   if (!state) return;
-  $('#content').innerHTML = page === 'devices' ? devicesView() : page === 'history' ? historyView() : settingsView();
+  $('#content').innerHTML = page === 'ips' ? ipsView() : page === 'devices' ? devicesView() : page === 'history' ? historyView() : settingsView();
+  applyMode();
 }
 
 async function refresh(passive = false) {
@@ -379,7 +422,8 @@ async function refresh(passive = false) {
     state = await response.json();
     renderChrome();
     const changed = JSON.stringify([state.devices, state.findings, state.events, state.viewGroups]) !== JSON.stringify([previous?.devices, previous?.findings, previous?.events, previous?.viewGroups]);
-    if (!passive || !previous) renderPage();
+    if (!passive || !previous || previous.canEdit !== state.canEdit) renderPage();
+    else if (page === 'ips') { if ((changed || JSON.stringify(state.deviceNotes) !== JSON.stringify(previous.deviceNotes)) && !editingNote) renderPage(); }
     else if (page === 'devices' && JSON.stringify(state.settings) !== JSON.stringify(previous.settings) && !$('.inspector')?.contains(document.activeElement) && !$('#rule-note-input')) {
       $('.inspector').innerHTML = settingsView(true) + historyPreview();
       if (changed) renderDeviceList();
@@ -387,6 +431,7 @@ async function refresh(passive = false) {
       renderDeviceList();
       $('#recent-events').innerHTML = recentEvents();
     } else if (page === 'history' && changed && !$('#content').contains(document.activeElement)) renderPage();
+    applyMode();
   } catch (error) {
     $('#connection').textContent = '서버 연결 끊김';
     $('#connection').className = 'status-dot error';
@@ -395,6 +440,9 @@ async function refresh(passive = false) {
 }
 
 document.addEventListener('click', async event => {
+  const noteEdit = event.target.closest('[data-ipnote-edit]');
+  if (noteEdit) { editingNote = noteEdit.dataset.ipnoteEdit; renderPage(); $('.ip-edit input')?.focus(); return; }
+  if (event.target.closest('[data-ipnote-cancel]')) { editingNote = null; renderPage(); return; }
   const reveal = event.target.closest('[data-reveal]');
   if (reveal) {
     const input = $(`#credential-${reveal.dataset.reveal}`);
@@ -610,6 +658,29 @@ document.addEventListener('change', async event => {
 });
 
 document.addEventListener('submit', async event => {
+  const noteForm = event.target.closest('[data-ipnote-form]');
+  if (noteForm) {
+    event.preventDefault();
+    try {
+      await post('/api/notes', { id: noteForm.dataset.ipnoteForm, name: noteForm.elements.name.value, memo: noteForm.elements.memo.value });
+      editingNote = null;
+      await refresh();
+      toast('저장했습니다.');
+    } catch (error) { toast(error.message); }
+    return;
+  }
+  const loginForm = event.target.closest('#login-form');
+  if (loginForm) {
+    event.preventDefault();
+    try {
+      await post('/api/login', { username: loginForm.elements.username.value, password: loginForm.elements.password.value });
+      loginForm.reset();
+      $('#login-dialog').close();
+      await refresh();
+      toast('로그인했습니다. 이제 수정할 수 있습니다.');
+    } catch (error) { $('#login-error').textContent = error.message; }
+    return;
+  }
   if (event.target.dataset.integration) {
     event.preventDefault();
     const form = event.target;
@@ -663,6 +734,12 @@ document.addEventListener('submit', async event => {
   finally { button.disabled = false; }
 });
 
+$('#auth-button').addEventListener('click', async () => {
+  if (!state.canEdit) { $('#login-error').textContent = ''; $('#login-dialog').showModal(); return; }
+  try { await post('/api/logout', {}); editingNote = null; await refresh(); toast('로그아웃했습니다. 읽기 모드입니다.'); }
+  catch (error) { toast(error.message); }
+});
+$('[data-login-cancel]').addEventListener('click', () => $('#login-dialog').close());
 $('#poll-button').addEventListener('click', async () => {
   try { await post('/api/poll', {}); await refresh(); setTimeout(() => refresh(true), 1200); }
   catch (error) { toast(error.message); }

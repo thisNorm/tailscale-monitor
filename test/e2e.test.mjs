@@ -45,10 +45,24 @@ async function setup(t) {
   return { tailnet, sent, base, auth, state, post, poll, reports, open, monitor: app.monitor };
 }
 
-test('UC0 access: login, host check and same-site write guard', async t => {
+test('UC0 access: open read mode, login for changes, host check and same-site write guard', async t => {
   const e = await setup(t);
-  assert.equal((await fetch(`${e.base}/api/state`)).status, 401);
-  assert.equal((await fetch(`${e.base}/api/state`, { headers: { Authorization: `Basic ${Buffer.from(`admin:${password}`).toString('base64')}` } })).status, 401);
+  const anonymous = await (await fetch(`${e.base}/api/state`)).json();
+  assert.deepEqual([anonymous.canEdit, anonymous.authEnabled], [false, true], 'anyone on the tailnet can read');
+  const plain = { 'Content-Type': 'application/json', 'X-Monitor-Request': '1' };
+  const write = (path, body, headers = {}) => fetch(`${e.base}${path}`, { method: 'POST', headers: { ...plain, ...headers }, body: JSON.stringify(body) });
+  assert.equal((await write('/api/poll', {})).status, 401, 'changes need a login');
+  assert.equal((await write('/api/login', { username: 'invako', password: `${password}x` })).status, 401);
+  const login = await write('/api/login', { username: 'invako', password });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  assert.match(login.headers.get('set-cookie'), /HttpOnly; SameSite=Strict/);
+  assert.equal((await (await fetch(`${e.base}/api/state`, { headers: { cookie } })).json()).canEdit, true);
+  const id = anonymous.devices[0]?.id ?? (await e.poll()).devices[0].id;
+  assert.equal((await write('/api/notes', { id, name: '별칭', memo: '축사 1동' }, { cookie })).status, 200);
+  assert.deepEqual((await e.state()).deviceNotes[id], { name: '별칭', memo: '축사 1동' });
+  assert.equal((await write('/api/logout', {}, { cookie })).status, 200);
+  assert.equal((await write('/api/poll', {}, { cookie })).status, 401, 'logged out session no longer edits');
   assert.equal((await fetch(`${e.base}/`, { headers: e.auth })).status, 200);
   assert.equal((await fetch(`${e.base}/healthz`)).status, 200);
   // fetch drops a custom Host header, so send the forged host with node:http.

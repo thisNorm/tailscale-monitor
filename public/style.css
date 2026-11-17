@@ -379,3 +379,40 @@ button.ip-chip:hover { background: light-dark(var(--l-surface-3), #18222e); bord
 .rule-note-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .regex-rules { border-top: 1px solid light-dark(var(--l-border), #2b313d); padding-top: 10px; }
 .regex-rules > summary { cursor: pointer; font-size: 13px; color: light-dark(var(--l-text-3), #a0a8b6); margin-bottom: 10px; }
+
+/* IP list: whole tailnet on one screen, one click copies. */
+.ip-list { display: grid; gap: 12px; }
+.ip-group h2 { display: flex; align-items: baseline; gap: 8px; font-size: 14px; font-weight: 600; padding: 0 4px 5px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.ip-group h2 span { font-size: 12px; font-weight: 400; color: var(--muted); }
+.ip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); column-gap: 18px; }
+.ip-row { display: flex; align-items: center; border-radius: 4px; }
+.ip-row:hover { background: var(--raised); }
+.ip-copy { flex: 1; min-width: 0; min-height: 26px; display: grid; grid-template-columns: minmax(0, 1fr) 118px minmax(0, .8fr); gap: 10px; justify-content: stretch; text-align: left; padding: 2px 6px; border: 0; background: transparent; font-size: 13.5px; }
+.ip-copy:hover { background: transparent; }
+.ip-name, .ip-memo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ip-addr { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-variant-numeric: tabular-nums; color: light-dark(var(--l-green), #a3cdb6); }
+.ip-memo { color: var(--muted); font-size: 12.5px; }
+.ip-edit-button { min-height: 24px; padding: 1px 8px; font-size: 12px; opacity: 0; }
+.ip-row:hover .ip-edit-button, .ip-edit-button:focus-visible { opacity: 1; }
+.ip-edit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; gap: 6px; padding: 3px 0; }
+.ip-edit input { min-width: 0; min-height: 30px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: inherit; }
+.ip-edit button { min-height: 30px; padding: 3px 10px; font-size: 13px; }
+#auth-button { min-height: 30px; padding: 4px 12px; font-size: 13px; }
+#login-dialog { width: min(360px, calc(100vw - 32px)); padding: 22px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: inherit; }
+#login-dialog::backdrop { background: rgb(0 0 0 / .35); }
+#login-form { display: grid; gap: 12px; }
+#login-form h2 { font-size: 18px; }
+#login-form > p:not(.form-error) { color: var(--muted); font-size: 13px; }
+#login-form label { display: grid; gap: 5px; font-size: 13px; }
+#login-form input { min-height: 36px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--raised); color: inherit; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* Read mode: controls that change server state are hidden (the server also refuses them). */
+.readonly :is(.ip-edit-button, [data-note-edit], [data-update], [data-exclude-id], [data-group-create], [data-group-add-child], [data-group-rename], [data-group-delete], .device-move, [data-reveal], #poll-button, .integration-actions button, #rules-form button[type="submit"]) { display: none; }
+@media (max-width: 640px) {
+  .ip-copy { grid-template-columns: minmax(0, 1fr) 112px; }
+  .ip-memo { grid-column: 1 / -1; }
+  .ip-edit-button { opacity: 1; }
+  .topbar-status { flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; min-width: 0; }
+  nav { overflow-x: auto; }
+  nav a > span { display: none; }
+}

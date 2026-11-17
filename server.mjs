@@ -2,7 +2,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual, randomBytes } from 'node:crypto';
 import { Monitor } from './monitor.mjs';
 import { Tailscale, slackSender, telegramSender } from './tailscale.mjs';
 import { Integrations } from './integrations.mjs';
@@ -77,6 +77,17 @@ export async function startServer({ env = process.env, dbPath, source, notifiers
       }
     } catch (error) { Object.assign(update, { checkedAt: new Date().toISOString(), error: error.message }); }
   };
+  // Reading is open to anyone who can reach the site (it is bound to the tailnet); changes need a login.
+  // shortcut: sessions live in memory, so a server restart logs everyone out; persist them if that becomes annoying.
+  const sessions = new Map();
+  const failures = new Map();
+  const sessionOf = req => /(?:^|;s*)tsm_session=([a-f0-9]{64})/.exec(req.headers.cookie || '')?.[1];
+  const canEdit = req => {
+    if (!password) return true;
+    const token = sessionOf(req), expires = token && sessions.get(token);
+    if (expires && expires > Date.now()) return true;
+    return Boolean(req.headers.authorization) && timingSafeEqual(digest(req.headers.authorization), digest(`Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`));
+  };
   let currentPoll = null;
   let savingIntegrations = false;
   const runPoll = () => {
@@ -98,14 +109,10 @@ export async function startServer({ env = process.env, dbPath, source, notifiers
       const url = new URL(req.url, `http://${req.headers.host}`);
       if (!allowedHosts.has(url.hostname)) return send(403, { error: 'MONITOR_ALLOWED_HOSTS에 허용된 주소로 접속하세요.' });
       if (url.pathname === '/healthz' && req.method === 'GET') return send(200, { running: true });
-      if (password && !timingSafeEqual(digest(req.headers.authorization || ''), digest(`Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`))) {
-        res.setHeader('WWW-Authenticate', 'Basic realm="Tailscale Monitor", charset="UTF-8"');
-        return send(401, { error: '로그인이 필요합니다.' });
-      }
       if (req.method === 'GET') {
         if (url.pathname === '/api/state') {
           if (update.updater?.state === 'updating') update.updater = await callUpdater('/status').catch(error => ({ state: 'failed', error: error.message }));
-          return send(200, { ...monitor.state(), update, integrations: integrations.status(), demo, pollIntervalSec: interval, serverTime: new Date().toISOString() });
+          return send(200, { ...monitor.state(), update, integrations: integrations.status(), demo, pollIntervalSec: interval, serverTime: new Date().toISOString(), canEdit: canEdit(req), authEnabled: Boolean(password) });
         }
         const asset = assets.get(url.pathname);
         if (!asset) return send(404, { error: '페이지를 찾을 수 없습니다.' });
@@ -119,7 +126,27 @@ export async function startServer({ env = process.env, dbPath, source, notifiers
         || (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host)) return send(403, { error: '같은 모니터링 사이트에서 요청하세요.' });
       const input = await body(req);
       if (!input || typeof input !== 'object' || Array.isArray(input)) return send(400, { error: '요청 내용을 확인하세요.' });
+      if (url.pathname === '/api/login') {
+        const who = req.socket.remoteAddress, recent = (failures.get(who) || []).filter(time => time > Date.now() - 900_000);
+        if (recent.length >= 10) return send(429, { error: '로그인 실패가 많습니다. 15분 뒤에 다시 시도하세요.' });
+        const ok = password && typeof input.username === 'string' && typeof input.password === 'string'
+          && timingSafeEqual(digest(input.username), digest(username)) && timingSafeEqual(digest(input.password), digest(password));
+        if (!ok) { failures.set(who, [...recent, Date.now()]); return send(401, { error: '아이디 또는 비밀번호가 맞지 않습니다.' }); }
+        failures.delete(who);
+        const token = randomBytes(32).toString('hex');
+        for (const [key, expires] of sessions) if (expires < Date.now()) sessions.delete(key);
+        sessions.set(token, Date.now() + 7 * 86400_000);
+        res.setHeader('Set-Cookie', `tsm_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 86400}`);
+        return send(200, { ok: true });
+      }
+      if (url.pathname === '/api/logout') {
+        sessions.delete(sessionOf(req));
+        res.setHeader('Set-Cookie', 'tsm_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+        return send(200, { ok: true });
+      }
+      if (!canEdit(req)) return send(401, { error: '로그인한 뒤 수정할 수 있습니다.' });
       switch (url.pathname) {
+        case '/api/notes': monitor.saveDeviceNote(input); break;
         case '/api/poll': void runPoll(); return send(202, { ok: true });
         case '/api/settings': monitor.saveSettings(input); break;
         case '/api/groups': monitor.saveViewGroups(input); break;
