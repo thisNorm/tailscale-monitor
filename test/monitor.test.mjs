@@ -61,8 +61,8 @@ test('failed device API cannot become a device deletion or discard previous stat
   assert.ok(f.monitor.state().collectors.devices.error);
   assert.equal(f.monitor.state().events.filter(x => x.kind === 'device-removed').length, 0);
   f.fail(false); f.devices([]); f.advance(); await f.monitor.poll();
-  assert.equal(f.monitor.state().devices[0].present, false);
-  assert.equal(f.monitor.state().collectors.devices.error, null);
+  assert.equal(f.monitor.state().devices.length, 1, 'an empty answer does not wipe the list');
+  assert.match(f.monitor.state().collectors.devices.error, /장비가 없습니다/);
 });
 
 test('audit logs sharing eventGroupID retain distinct changes and deduplicate overlapping windows', async t => {

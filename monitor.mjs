@@ -136,6 +136,8 @@ export class Monitor {
     this.busy = false;
     // Settings saved by an older version lack newer keys (e.g. changeAlertsEnabled); fill them with defaults.
     this.setMeta('settings', { ...defaults, ...this.meta('settings') });
+    const gone = this.db.prepare('SELECT id FROM devices WHERE present=0').all().map(row => row.id);
+    if (gone.length) this.forgetDevices(gone);
     // One-time: re-read 89 days of audit logs so tag/name/policy changes from before 1.1.5 reach history
     // (not alerted: they are older than changeAlertsSince), and drop the poll-based tag events they replace.
     // Schema 3 also re-derives tag events, whose "before" tags were wrong in the first backfill.
@@ -262,6 +264,8 @@ export class Monitor {
     const ids = items.map(d => d.nodeId || d.id);
     if (new Set(ids).size !== ids.length) throw new Error('devices 응답에 중복 노드 ID가 있습니다.');
     const old = new Map(this.rows('devices').map(row => [row.id, row]));
+    // A tailnet with devices never answers with none; treat it as a bad response instead of wiping the list.
+    if (!items.length && old.size) throw new Error('devices 응답에 장비가 없습니다. 기존 장비 목록을 유지합니다.');
     for (const item of items) {
       const id = item.nodeId || item.id;
       const d = { ...item, displayName: item.name?.split('.')[0] || item.hostname, tags: sorted(item.tags || []) };
@@ -271,11 +275,16 @@ export class Monitor {
       old.delete(id);
       this.db.prepare('INSERT OR REPLACE INTO devices VALUES (?, ?, 1)').run(id, JSON.stringify(d));
     }
-    for (const [id, row] of old) {
-      if (!row.present) continue;
-      this.db.prepare('UPDATE devices SET present=0 WHERE id=?').run(id);
-    }
+    // Devices gone from Tailscale leave the list; the deletion itself stays in history from the audit log.
+    if (old.size) this.forgetDevices([...old.keys()]);
     this.evaluateDevices();
+  }
+
+  forgetDevices(ids) {
+    for (const id of ids) this.db.prepare('DELETE FROM devices WHERE id=?').run(id);
+    const settings = this.meta('settings'), groups = this.meta('viewGroups');
+    if (settings.excludedDevices.some(id => ids.includes(id))) this.setMeta('settings', { ...settings, excludedDevices: settings.excludedDevices.filter(id => !ids.includes(id)) });
+    if (groups && ids.some(id => id in groups.members)) this.setMeta('viewGroups', { ...groups, members: Object.fromEntries(Object.entries(groups.members).filter(([id]) => !ids.includes(id))) });
   }
 
   async poll() {
